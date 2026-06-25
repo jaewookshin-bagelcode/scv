@@ -1,0 +1,8 @@
+# clippy 설정. lint 레벨 자체는 각 크레이트 lib.rs 상단의 `#![warn(...)]` 와
+# CI 의 `cargo clippy -- -D warnings` 로 강제한다(코딩 규칙 문서 참고).
+
+# 함수가 너무 많은 인자를 받으면 구조체로 묶도록 경고한다.
+too-many-arguments-threshold = 8
+
+# 인지 복잡도 임계치(중첩/분기 과다 함수 경고).
+cognitive-complexity-threshold = 30

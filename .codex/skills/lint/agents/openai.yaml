@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lint"
+  short_description: "Run scv repository validation gates"
+  default_prompt: "Use $lint to run the scv repository validation gates and report any failures."

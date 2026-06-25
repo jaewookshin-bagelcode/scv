@@ -1,0 +1,21 @@
+# Rust 빌드 산출물
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# 환경/비밀 · 에이전트 개인 로컬 설정(Claude·Codex 의 *.local.json/.toml — settings.local.json 등)
+.env
+*.local.toml
+*.local.json
+
+# 세션/캐시(로컬 런타임 상태)
+.scv/
+/scratch/
+
+# 에이전트 스킬(.claude/, .codex/)은 커밋한다. 개인/로컬 설정(*.local.*)은 위에서 제외.
+
+# OS / 에디터
+.DS_Store
+*.swp
+.idea/
+.vscode/

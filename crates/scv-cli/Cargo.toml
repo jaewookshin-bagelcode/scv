@@ -1,0 +1,28 @@
+[package]
+name = "scv-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# 바이너리 이름은 `scv`.
+[[bin]]
+name = "scv"
+path = "src/main.rs"
+
+# 합성 루트(composition root): 모든 구체 크레이트를 여기서 조립한다.
+[dependencies]
+scv-core.workspace = true
+scv-config.workspace = true
+scv-providers.workspace = true
+scv-tools.workspace = true
+scv-skills.workspace = true
+scv-tui.workspace = true
+
+tokio.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true

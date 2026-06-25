@@ -1,0 +1,63 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.83"
+license = "MIT"
+authors = ["bagelcode"]
+repository = "https://github.com/bagelcode/scv"
+
+# 모든 크레이트가 동일 버전을 쓰도록 의존성은 워크스페이스에서 단일 관리한다.
+# 개별 크레이트의 Cargo.toml 은 `dep.workspace = true` 로만 참조한다.
+[workspace.dependencies]
+# --- async runtime ---
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-std", "sync", "time", "signal"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# --- error / result ---
+anyhow = "1"
+thiserror = "2"
+
+# --- serde / 직렬화 ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9" # SKILL.md frontmatter 파싱
+toml = "0.8"       # config.toml 파싱
+
+# --- HTTP / SSE (Anthropic·OpenAI 어댑터에서 사용) ---
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+eventsource-stream = "0.2" # SSE(text/event-stream) 파서
+
+# --- CLI / TUI ---
+clap = { version = "4", features = ["derive", "env"] }
+ratatui = "0.29"
+crossterm = "0.28"
+
+# --- 관측성 / 로깅 ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# --- 유틸 ---
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+globset = "0.4" # glob 툴
+ignore = "0.4"  # .gitignore 인지 파일 탐색
+
+# 내부 크레이트
+scv-core = { path = "crates/scv-core" }
+scv-config = { path = "crates/scv-config" }
+scv-providers = { path = "crates/scv-providers" }
+scv-tools = { path = "crates/scv-tools" }
+scv-skills = { path = "crates/scv-skills" }
+scv-tui = { path = "crates/scv-tui" }
+
+# 릴리스 빌드 최적화
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

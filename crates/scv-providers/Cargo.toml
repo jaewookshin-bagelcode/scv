@@ -1,0 +1,17 @@
+[package]
+name = "scv-providers"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Anthropic 은 공식 Rust SDK 가 없어 reqwest + SSE 로 직접 Messages API 를 호출한다.
+[dependencies]
+scv-core.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+eventsource-stream.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

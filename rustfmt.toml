@@ -1,0 +1,7 @@
+# 기본값에서 크게 벗어나지 않되, 가독성 관련 옵션만 명시한다.
+edition = "2021"
+max_width = 100
+use_small_heuristics = "Default"
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+reorder_imports = true

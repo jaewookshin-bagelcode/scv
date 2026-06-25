@@ -1,0 +1,5 @@
+# 팀 전원이 동일한 툴체인을 쓰도록 고정한다. rustup 이 자동으로 설치/전환한다.
+[toolchain]
+channel = "1.83.0"
+components = ["rustfmt", "clippy", "rust-src"]
+profile = "default"

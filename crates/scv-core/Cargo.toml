@@ -1,0 +1,20 @@
+[package]
+name = "scv-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# scv-core 는 도메인 타입과 추상(trait), 에이전트 루프만 담는다.
+# 어떤 구체 프로바이더/도구 크레이트에도 의존하지 않는다(의존성 역전).
+[dependencies]
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
