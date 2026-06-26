@@ -153,6 +153,32 @@ SCV_AGENT__MAX_TOKENS=200 scv --no-tools "긴 얘기 해줘"
 
 ---
 
+## 스킬(skills)
+
+스킬은 "특정 작업을 위한 절차/지식 묶음"이다. 디렉터리 하나가 한 스킬(`<name>/SKILL.md`)이고,
+모델에는 평소 이름+설명만 노출하다가 필요할 때 본문을 주입한다(progressive disclosure).
+
+- **내장**: `compact`(대화를 조밀하게 요약) 스킬이 **항상 포함**된다(설치·설정과 무관).
+- **전역**: `~/.config/scv/skills/<name>/SKILL.md` — 모든 프로젝트에서 공통.
+- **프로젝트 로컬**: scv 를 연 폴더의 `./.scv/skills/<name>/SKILL.md` — 그 프로젝트에서만.
+  같은 이름이면 프로젝트 로컬이 전역을, 전역이 내장을 덮어쓴다.
+
+```bash
+mkdir -p .scv/skills/my-skill
+cat > .scv/skills/my-skill/SKILL.md <<'EOF'
+---
+name: my-skill
+description: 이 스킬이 무엇을 하는지 한 줄
+when_to_use: 언제 발동해야 하는지
+---
+(본문: 절차/지침)
+EOF
+```
+
+추가 스킬 디렉터리는 설정 `[skills].dirs` 로 더할 수 있다.
+
+---
+
 ## 프로바이더 전환(클라우드)
 
 ```bash
@@ -185,22 +211,14 @@ OpenAI-호환 게이트웨이(OpenRouter·사내 LLM 등)는 `[[providers]].base
 
 | 문서 | 내용 |
 |------|------|
+| [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md) | 개발 가이드 — 소스 빌드/실행, lint 게이트, 크레이트 구조, 기여 규약 |
 | [`docs/SETUP.md`](./docs/SETUP.md) | 세팅 가이드 — 툴체인, 빌드, 설정, 수동 테스트, 개발 워크플로 |
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | 설계 — agentic loop, 4대 기능, 멀티 프로바이더, TUI 런타임, 크레이트 구조 |
 | [`docs/ROADMAP.md`](./docs/ROADMAP.md) | 구현 우선순위/진행 상태 |
 | [`docs/CODING_RULES.md`](./docs/CODING_RULES.md) | 코딩 규칙 — Rust 컨벤션, 에러/async/보안, LLM 연동 |
 | [`AGENTS.md`](./AGENTS.md) | 에이전트(기여자) 작업 규약 — 단일 출처 규칙 |
 
-## 워크스페이스 구조
+## 개발
 
-```
-scv-core        도메인 모델 + trait(Provider/Tool/Skill/ContextManager/...) + agentic loop  ← 추상의 중심
-scv-providers   Provider 구현 (openai · openai-compat · ollama 재사용 · anthropic)
-scv-tools       Tool 구현 (read/write/edit/bash/glob/grep/web_fetch/transcript_search) + 권한 정책
-scv-skills      SKILL.md 로더 (progressive disclosure)
-scv-config      설정 로드/다단계 병합(figment)
-scv-tui         ratatui 기반 인터랙티브 UI — 스트림 렌더 · 승인 모달 · 진행 표시 · 인터럽트
-scv-cli         바이너리 `scv` — 합성 루트(조립/부트스트랩)
-```
-
-의존성은 항상 `scv-core` 를 향한다(의존성 역전). 새 프로바이더/도구/스킬은 core 변경 없이 추가된다.
+소스 빌드·실행·테스트·크레이트 구조·기여 규약은 **[`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md)**.
+설계는 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md), 작업 규약은 [`AGENTS.md`](./AGENTS.md).
