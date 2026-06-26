@@ -19,3 +19,6 @@ Cargo.lock.bak
 *.swp
 .idea/
 .vscode/
+
+# Obsidian (로컬 노트 보기용 — 저장소 산출물 아님)
+.obsidian/
