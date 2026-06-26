@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// 진입 컨텍스트를 찾아 병합한 문자열을 돌려준다(없으면 None).
 ///
 /// 탐색 체인(덜 구체적 → 더 구체적 순으로 이어 붙인다 — **가까운 것이 뒤에 와 우선**):
-///   사용자 전역 `~/.config/scv/AGENTS.md`
+///   사용자 전역 `~/.scv/AGENTS.md`
 ///     → repo 루트 `AGENTS.md`(`.git` 경계로 탐지)
 ///     → 루트~cwd 사이 하위 디렉터리들의 `AGENTS.md`
 ///
@@ -71,10 +71,10 @@ fn context_file_in(dir: &Path) -> Option<PathBuf> {
     claude.is_file().then_some(claude)
 }
 
-/// 사용자 전역 컨텍스트 파일(`~/.config/scv/AGENTS.md`, 폴백 `CLAUDE.md`).
+/// 사용자 전역 컨텍스트 파일(`~/.scv/AGENTS.md`, 폴백 `CLAUDE.md`).
 fn global_context_file() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    context_file_in(&Path::new(&home).join(".config/scv"))
+    context_file_in(&Path::new(&home).join(".scv"))
 }
 
 /// 파일을 읽어 비어 있지 않으면 섹션으로 추가한다(canonical 경로로 중복 방지).

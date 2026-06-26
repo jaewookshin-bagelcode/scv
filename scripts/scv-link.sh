@@ -14,7 +14,7 @@
 #
 # bin 디렉터리 선택(우선순위): $SCV_BIN_DIR → PATH 에 있는 ~/.local/bin → PATH 에 있는
 #   ~/.cargo/bin → ~/.local/bin(없으면 PATH 추가 안내). 직접 지정: SCV_BIN_DIR=/path ...
-# 스킬 설치 위치: $SCV_SKILLS_DIR (기본 ~/.config/scv/skills).
+# 스킬 설치 위치: $SCV_SKILLS_DIR (기본 ~/.scv/skills).
 
 set -eu
 
@@ -22,7 +22,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 TARGET="$REPO_ROOT/target/release/scv"
 SKILLS_SRC="$REPO_ROOT/skills"
-SKILLS_DEST="${SCV_SKILLS_DIR:-$HOME/.config/scv/skills}"
+SKILLS_DEST="${SCV_SKILLS_DIR:-$HOME/.scv/skills}"
 
 # PATH 에 이미 있는 bin 디렉터리를 골라 "자동 호출"이 바로 되게 한다.
 pick_bin_dir() {
@@ -120,7 +120,7 @@ case "$cmd" in
     *)
         echo "usage: sh scripts/scv-link.sh [install|uninstall|status]" >&2
         echo "  env: SCV_BIN_DIR (default: PATH 의 ~/.local/bin 또는 ~/.cargo/bin)" >&2
-        echo "       SCV_SKILLS_DIR (default: ~/.config/scv/skills)" >&2
+        echo "       SCV_SKILLS_DIR (default: ~/.scv/skills)" >&2
         exit 2
         ;;
 esac

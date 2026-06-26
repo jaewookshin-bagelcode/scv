@@ -61,10 +61,10 @@ scv                      # 인터랙티브 TUI
 scv "이 저장소 구조를 한 문단으로 설명해줘"   # 원샷(한 번 묻고 끝)
 ```
 
-- **설정**은 `~/.config/scv/config.toml`(홈 기준, cwd 무관)에서 읽는다 → 어디서 실행하든 동일.
+- **설정**은 `~/.scv/config.toml`(홈 기준, cwd 무관)에서 읽는다 → 어디서 실행하든 동일.
 - **작업 대상**은 실행한 디렉터리(cwd) → 도구의 파일 읽기/쓰기 루트.
 - 첫 실행에 설정 파일이 없으면 [`config/config.example.toml`](./config/config.example.toml) 을
-  `~/.config/scv/config.toml` 로 복사한다(없어도 기본값으로 동작하지만 프로바이더 정의는 필요).
+  `~/.scv/config.toml` 로 복사한다(없어도 기본값으로 동작하지만 프로바이더 정의는 필요).
 
 > ⚠ **scv 는 자기 소스 레포 안에서는 실행을 거부한다**(자기 코드를 작업 대상으로 삼는 사고 방지).
 > 이 레포(`scv` 개발 디렉터리)에서 돌리면 거부 메시지가 뜬다 — **다른 프로젝트 디렉터리에서** 쓰자.
@@ -156,8 +156,8 @@ worktree 를 자동 정리한다. 비-git 디렉터리면 격리 없이 cwd 를 
 
 ## 설정
 
-`~/.config/scv/config.toml`. 예시는 [`config/config.example.toml`](./config/config.example.toml).
-**다단계 병합**(뒤가 앞을 덮음): 내장 기본값 → 사용자(`~/.config/scv/config.toml`, `SCV_CONFIG`
+`~/.scv/config.toml`. 예시는 [`config/config.example.toml`](./config/config.example.toml).
+**다단계 병합**(뒤가 앞을 덮음): 내장 기본값 → 사용자(`~/.scv/config.toml`, `SCV_CONFIG`
 로 경로 변경) → 프로젝트(`./.scv/config.toml`, cwd 기준) → 환경변수(`SCV_*`) → CLI 플래그.
 
 ```bash
@@ -180,7 +180,7 @@ SCV_AGENT__MAX_TOKENS=200 scv --no-tools "긴 얘기 해줘"
 - **기본 스킬**: `sh scripts/scv-link.sh install` 이 레포의 `skills/`(현재 `commit`, `review`)을
   전역 디렉터리로 설치한다 — **기존 같은 이름은 덮어쓰지 않는다**(편집 보존). 컴파일 내장이
   아니라 **파일**이라 자유롭게 수정·삭제 가능.
-- **전역**: `~/.config/scv/skills/<name>/SKILL.md` — 모든 프로젝트에서 공통.
+- **전역**: `~/.scv/skills/<name>/SKILL.md` — 모든 프로젝트에서 공통.
 - **프로젝트 로컬**: scv 를 연 폴더의 `./.scv/skills/<name>/SKILL.md` — 그 프로젝트에서만.
   같은 이름이면 프로젝트 로컬이 전역을 덮어쓴다.
 

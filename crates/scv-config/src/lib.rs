@@ -1,5 +1,5 @@
 //! 설정 로딩 — **다단계 병합**(뒤가 앞을 덮음, `docs/ROADMAP.md` 4d):
-//!   내장 기본값(serde default) → `~/.config/scv/config.toml`(또는 `SCV_CONFIG`)
+//!   내장 기본값(serde default) → `~/.scv/config.toml`(또는 `SCV_CONFIG`)
 //!   → `./.scv/config.toml`(프로젝트, cwd 기준) → 환경변수 `SCV_*`.
 //! CLI 플래그는 그 위에서 합성 루트(scv-cli)가 덮는다(`--provider`/`--model`/… ).
 //!
@@ -138,8 +138,9 @@ impl Config {
             .merge(Env::prefixed("SCV_").split("__"))
     }
 
-    /// 사용자 설정 경로. `SCV_CONFIG` 가 있으면 그 경로, 없으면 `~/.config/scv/config.toml`.
-    /// **cwd 와 무관**(홈 기준).
+    /// 사용자 설정 경로. `SCV_CONFIG` 가 있으면 그 경로, 없으면 `~/.scv/config.toml`.
+    /// **cwd 와 무관**(홈 기준). 설정·스킬·세션·worktree 가 모두 `~/.scv/` 아래 모인다
+    /// (Claude `~/.claude`, Codex `~/.codex` 처럼 단일 홈).
     fn user_path() -> PathBuf {
         if let Some(custom) = std::env::var_os("SCV_CONFIG") {
             return PathBuf::from(custom);
@@ -147,7 +148,7 @@ impl Config {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
-        home.join(".config/scv/config.toml")
+        home.join(".scv/config.toml")
     }
 
     /// 프로젝트 설정 경로(cwd 기준 `./.scv/config.toml`). 작업 중인 repo 별 오버라이드.

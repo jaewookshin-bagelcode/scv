@@ -30,7 +30,7 @@ sh scripts/scv-link.sh uninstall  # 링크 제거(설치한 스킬은 남김 —
 ```
 
 `install` 은 레포의 **기본 스킬**(`skills/<name>/SKILL.md` — 현재 `commit`·`review`)을
-`~/.config/scv/skills/` 로 복사한다(기존 같은 이름은 보존). 새 기본 스킬은 `skills/` 에 디렉터리만
+`~/.scv/skills/` 로 복사한다(기존 같은 이름은 보존). 새 기본 스킬은 `skills/` 에 디렉터리만
 추가하면 된다(코드 변경 없음). `.claude/skills/`(이 repo 의 Claude Code 용)와는 별개다.
 
 ## "끝남"의 정의 — lint 게이트

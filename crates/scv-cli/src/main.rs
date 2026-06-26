@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
         )));
         reg
     };
-    // 스킬 디렉터리도 선행 `~/` 를 확장한다(전역 `~/.config/scv/skills`). 프로젝트 로컬
+    // 스킬 디렉터리도 선행 `~/` 를 확장한다(전역 `~/.scv/skills`). 프로젝트 로컬
     // `./.scv/skills` 는 cwd 기준 상대경로라 그대로 동작한다. 내장 compact 스킬은 항상 포함.
     let skill_dirs: Vec<std::path::PathBuf> =
         config.skills.dirs.iter().map(|d| expand_tilde(d)).collect();
