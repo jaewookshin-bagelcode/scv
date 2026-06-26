@@ -25,7 +25,7 @@ use crate::context::ContextManager;
 use crate::message::{AgentEvent, ContentBlock, Message, Role, StopReason, StreamEvent};
 use crate::provider::{CompletionRequest, Effort, Provider, ThinkingMode};
 use crate::session::Session;
-use crate::tool::{PermissionGate, PermissionLevel, ToolContext, ToolRegistry};
+use crate::tool::{PermissionGate, PermissionLevel, Tool, ToolContext, ToolRegistry};
 use crate::{Error, Result};
 
 /// 루프의 라이프사이클 통지([`AgentEvent`])를 받아 화면 출력 등에 쓰는 관찰자.
@@ -164,29 +164,32 @@ impl Agent {
     }
 
     /// assistant 메시지의 모든 tool_use 블록을 실행해 tool_result 블록들을 만든다.
+    ///
+    /// **권한은 순차로** 해소한다(대화형 `Ask` 프롬프트는 한 번에 하나, 거부 시 턴 중단).
+    /// 그 다음 **`parallel_safe` 도구(read/glob/grep 등 부작용 없음)는 `join_all` 로 동시
+    /// 실행**하고, 비-parallel 도구(write/edit/bash)는 순차로 실행한다. tool_result 는
+    /// tool_use_id 로 매칭되지만, 결정성을 위해 **원래 tool_use 순서**로 모은다.
     async fn execute_tool_calls(
         &self,
         assistant: &Message,
         observer: &dyn Observer,
     ) -> Result<Vec<ContentBlock>> {
-        let mut results = Vec::new();
+        let uses: Vec<(String, String, serde_json::Value)> = assistant
+            .tool_uses()
+            .map(|(id, name, input)| (id.to_string(), name.to_string(), input.clone()))
+            .collect();
 
-        // NOTE: parallel_safe 도구들은 join_all 로 병렬 실행하도록 확장할 수 있다(현재 순차).
-        for (id, name, input) in assistant.tool_uses() {
-            // 협조적 취소: 도구 사이마다 체크포인트.
+        // 1단계: 권한을 순차 해소해 실행 계획을 만든다.
+        let mut plans: Vec<ToolPlan> = Vec::with_capacity(uses.len());
+        for (_id, name, input) in &uses {
+            // 협조적 취소: 권한 해소 사이 체크포인트.
             if self.tool_ctx.cancel.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-
             let Some(tool) = self.tools.get(name) else {
-                results.push(ContentBlock::ToolResult {
-                    tool_use_id: id.to_string(),
-                    content: format!("unknown tool: {name}"),
-                    is_error: true,
-                });
+                plans.push(ToolPlan::Unknown);
                 continue;
             };
-
             // 권한 결정. 도구가 선언한 기준 권한을 게이트가 최종 확정한다.
             //  - Allow(읽기 전용 등 부작용 없음) → 게이트에 묻지 않고 허용.
             //  - Deny(예: workdir 밖 경로) → 즉시 거부.
@@ -196,41 +199,116 @@ impl Agent {
                 PermissionLevel::Deny => PermissionLevel::Deny,
                 PermissionLevel::Ask => {
                     observer
-                        .on_event(&AgentEvent::PermissionAsked {
-                            name: name.to_string(),
-                        })
+                        .on_event(&AgentEvent::PermissionAsked { name: name.clone() })
                         .await;
                     self.permissions.decide(name, input).await
                 }
             };
             // fail-closed: 명시적 Allow 만 실행한다. 게이트가 끝내 Ask 를 돌려주면
-            // (대화형 게이트가 없어 동의를 못 받은 상태) 실행하지 않고 거부한다 —
-            // write/bash 같은 Ask 도구가 모달 없이 무단 실행되는 것을 막는다.
+            // (대화형 동의를 못 받은 상태) 실행하지 않고 거부한다 — write/bash 같은 Ask
+            // 도구가 모달 없이 무단 실행되는 것을 막는다.
             if level != PermissionLevel::Allow {
-                return Err(Error::PermissionDenied(name.to_string()));
+                return Err(Error::PermissionDenied(name.clone()));
             }
-
-            observer
-                .on_event(&AgentEvent::ToolStart {
-                    name: name.to_string(),
-                })
-                .await;
-            let output = tool.invoke(input.clone(), &self.tool_ctx).await;
-            observer
-                .on_event(&AgentEvent::ToolEnd {
-                    name: name.to_string(),
-                    is_error: output.is_error,
-                })
-                .await;
-            results.push(ContentBlock::ToolResult {
-                tool_use_id: id.to_string(),
-                content: output.content,
-                is_error: output.is_error,
+            let parallel = tool.parallel_safe();
+            plans.push(ToolPlan::Run {
+                tool: tool.clone(),
+                parallel,
             });
         }
 
-        Ok(results)
+        // 2단계: 실행. 결과는 인덱스로 채워 원래 순서를 보존한다.
+        let mut results: Vec<Option<ContentBlock>> = (0..uses.len()).map(|_| None).collect();
+
+        // 2a. parallel_safe 그룹을 동시에 실행(join_all). 부작용이 없어 순서 무관·경쟁 안전.
+        if self.tool_ctx.cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let parallel_futures: Vec<_> = plans
+            .iter()
+            .enumerate()
+            .filter_map(|(i, plan)| match plan {
+                ToolPlan::Run {
+                    tool,
+                    parallel: true,
+                } => {
+                    let tool = tool.clone();
+                    let (id, name, input) = uses[i].clone();
+                    Some(async move {
+                        observer
+                            .on_event(&AgentEvent::ToolStart { name: name.clone() })
+                            .await;
+                        let output = tool.invoke(input, &self.tool_ctx).await;
+                        observer
+                            .on_event(&AgentEvent::ToolEnd {
+                                name,
+                                is_error: output.is_error,
+                            })
+                            .await;
+                        (
+                            i,
+                            ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: output.content,
+                                is_error: output.is_error,
+                            },
+                        )
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        for (i, block) in futures::future::join_all(parallel_futures).await {
+            results[i] = Some(block);
+        }
+
+        // 2b. 나머지(비-parallel 실행 + unknown 도구)는 순차로.
+        for (i, plan) in plans.iter().enumerate() {
+            if results[i].is_some() {
+                continue;
+            }
+            let (id, name, input) = &uses[i];
+            let block = match plan {
+                ToolPlan::Unknown => ContentBlock::ToolResult {
+                    tool_use_id: id.clone(),
+                    content: format!("unknown tool: {name}"),
+                    is_error: true,
+                },
+                ToolPlan::Run { tool, .. } => {
+                    // 협조적 취소: 비가역 도구 실행 사이 체크포인트.
+                    if self.tool_ctx.cancel.is_cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    observer
+                        .on_event(&AgentEvent::ToolStart { name: name.clone() })
+                        .await;
+                    let output = tool.invoke(input.clone(), &self.tool_ctx).await;
+                    observer
+                        .on_event(&AgentEvent::ToolEnd {
+                            name: name.clone(),
+                            is_error: output.is_error,
+                        })
+                        .await;
+                    ContentBlock::ToolResult {
+                        tool_use_id: id.clone(),
+                        content: output.content,
+                        is_error: output.is_error,
+                    }
+                }
+            };
+            results[i] = Some(block);
+        }
+
+        Ok(results.into_iter().map(|b| b.expect("filled")).collect())
     }
+}
+
+/// 한 tool_use 의 실행 계획(권한 해소 후). `execute_tool_calls` 의 1→2단계 사이 매개.
+enum ToolPlan {
+    /// 알 수 없는 도구 → tool_result 에 에러로 돌려준다(모델이 복구 시도 가능).
+    Unknown,
+    /// 실행 허가됨. `parallel` 이면 동시 실행 그룹에 들어간다.
+    Run { tool: Arc<dyn Tool>, parallel: bool },
 }
 
 /// 스트림 이벤트를 받아 하나의 assistant 메시지(콘텐츠 블록 리스트)로 누적한다.
@@ -451,5 +529,244 @@ mod tests {
         }]);
         assert_eq!(blocks.len(), 1);
         assert!(matches!(&blocks[0], ContentBlock::ToolUse { input, .. } if input == &json!({})));
+    }
+}
+
+#[cfg(test)]
+mod exec_tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use serde_json::json;
+
+    use super::*;
+    use crate::context::NoopContextManager;
+    use crate::provider::{CompletionRequest, EventStream, ModelInfo, Provider, ToolSchema};
+    use crate::tool::{
+        CancellationToken, PermissionGate, PermissionLevel, Tool, ToolContext, ToolOutput,
+        ToolRegistry,
+    };
+
+    /// stream/count_tokens 는 execute_tool_calls 테스트에서 호출되지 않는다.
+    struct StubProvider;
+    #[async_trait]
+    impl Provider for StubProvider {
+        fn id(&self) -> &str {
+            "stub"
+        }
+        fn models(&self) -> &[ModelInfo] {
+            &[]
+        }
+        async fn stream(&self, _request: CompletionRequest) -> Result<EventStream> {
+            unreachable!("stream not used in execute_tool_calls tests")
+        }
+        async fn count_tokens(
+            &self,
+            _system: Option<&str>,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> Result<u64> {
+            Ok(0)
+        }
+    }
+
+    struct AllowGate;
+    #[async_trait]
+    impl PermissionGate for AllowGate {
+        async fn decide(&self, _tool: &str, _input: &serde_json::Value) -> PermissionLevel {
+            PermissionLevel::Allow
+        }
+    }
+
+    /// Allow + 이름만 echo. `parallel` 로 parallel_safe 여부를 정한다.
+    struct EchoTool {
+        name: String,
+        parallel: bool,
+    }
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "echo"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({ "type": "object" })
+        }
+        fn permission(&self, _input: &serde_json::Value) -> PermissionLevel {
+            PermissionLevel::Allow
+        }
+        fn parallel_safe(&self) -> bool {
+            self.parallel
+        }
+        async fn invoke(&self, _input: serde_json::Value, _ctx: &ToolContext) -> ToolOutput {
+            ToolOutput::ok(self.name.clone())
+        }
+    }
+
+    /// parallel_safe 도구. 두 개가 **동시에** 실행돼야만 barrier 를 통과한다 — 순차면 데드락.
+    struct BarrierTool {
+        name: String,
+        barrier: Arc<tokio::sync::Barrier>,
+    }
+    #[async_trait]
+    impl Tool for BarrierTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "barrier"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({ "type": "object" })
+        }
+        fn permission(&self, _input: &serde_json::Value) -> PermissionLevel {
+            PermissionLevel::Allow
+        }
+        fn parallel_safe(&self) -> bool {
+            true
+        }
+        async fn invoke(&self, _input: serde_json::Value, _ctx: &ToolContext) -> ToolOutput {
+            self.barrier.wait().await;
+            ToolOutput::ok(self.name.clone())
+        }
+    }
+
+    fn agent_with(tools: ToolRegistry) -> Agent {
+        Agent {
+            provider: Arc::new(StubProvider),
+            tools,
+            permissions: Arc::new(AllowGate),
+            context: Arc::new(NoopContextManager),
+            model: "m".into(),
+            system_prompt: String::new(),
+            max_tokens: 16,
+            effort: None,
+            max_tool_iterations: 5,
+            tool_ctx: ToolContext {
+                workdir: std::env::temp_dir(),
+                cancel: CancellationToken::new(),
+            },
+        }
+    }
+
+    fn tool_use(id: &str, name: &str) -> ContentBlock {
+        ContentBlock::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input: json!({}),
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_safe_tools_run_concurrently() {
+        // barrier(2): 두 도구가 동시에 실행돼야 둘 다 진행한다. 순차 실행이면 데드락 →
+        // timeout 으로 잡아 실패시킨다(= 병렬 실행을 증명).
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(BarrierTool {
+            name: "a".into(),
+            barrier: barrier.clone(),
+        }));
+        reg.register(Arc::new(BarrierTool {
+            name: "b".into(),
+            barrier: barrier.clone(),
+        }));
+        let agent = agent_with(reg);
+        let assistant = Message::assistant(vec![tool_use("1", "a"), tool_use("2", "b")]);
+
+        let results = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            agent.execute_tool_calls(&assistant, &NullObserver),
+        )
+        .await
+        .expect("must not deadlock — proves concurrent execution")
+        .expect("ok");
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn results_keep_tool_use_order_across_mixed_and_unknown() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(EchoTool {
+            name: "x".into(),
+            parallel: true,
+        }));
+        reg.register(Arc::new(EchoTool {
+            name: "s".into(),
+            parallel: false,
+        }));
+        reg.register(Arc::new(EchoTool {
+            name: "y".into(),
+            parallel: true,
+        }));
+        let agent = agent_with(reg);
+        // 순서: parallel, sequential, unknown, parallel.
+        let assistant = Message::assistant(vec![
+            tool_use("1", "x"),
+            tool_use("2", "s"),
+            tool_use("3", "nope"),
+            tool_use("4", "y"),
+        ]);
+
+        let results = agent
+            .execute_tool_calls(&assistant, &NullObserver)
+            .await
+            .expect("ok");
+        let ids: Vec<&str> = results
+            .iter()
+            .map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id.as_str(),
+                _ => panic!("expected tool_result"),
+            })
+            .collect();
+        // 원래 tool_use 순서가 그대로 보존된다.
+        assert_eq!(ids, ["1", "2", "3", "4"]);
+        // 미지의 도구(id 3)는 에러 결과.
+        assert!(matches!(
+            &results[2],
+            ContentBlock::ToolResult { is_error: true, content, .. } if content.contains("unknown tool: nope")
+        ));
+    }
+
+    #[tokio::test]
+    async fn denied_ask_tool_aborts_turn() {
+        struct DenyGate;
+        #[async_trait]
+        impl PermissionGate for DenyGate {
+            async fn decide(&self, _t: &str, _i: &serde_json::Value) -> PermissionLevel {
+                PermissionLevel::Deny
+            }
+        }
+        struct AskTool;
+        #[async_trait]
+        impl Tool for AskTool {
+            fn name(&self) -> &str {
+                "danger"
+            }
+            fn description(&self) -> &str {
+                "ask"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                json!({ "type": "object" })
+            }
+            fn permission(&self, _i: &serde_json::Value) -> PermissionLevel {
+                PermissionLevel::Ask
+            }
+            async fn invoke(&self, _i: serde_json::Value, _c: &ToolContext) -> ToolOutput {
+                ToolOutput::ok("ran")
+            }
+        }
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(AskTool));
+        let mut agent = agent_with(reg);
+        agent.permissions = Arc::new(DenyGate);
+        let assistant = Message::assistant(vec![tool_use("1", "danger")]);
+        let err = agent
+            .execute_tool_calls(&assistant, &NullObserver)
+            .await
+            .expect_err("deny should abort the turn");
+        assert!(matches!(err, Error::PermissionDenied(t) if t == "danger"));
     }
 }
