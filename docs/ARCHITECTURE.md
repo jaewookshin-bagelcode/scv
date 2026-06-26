@@ -48,6 +48,42 @@ flowchart TD
 `dyn Provider`, `dyn Tool`, `dyn PermissionGate`, `dyn ContextManager` 같은 trait
 object 만 들고 있다. 따라서 어떤 프로바이더/도구 조합과도 같은 루프가 동작한다.
 
+### 2.1 매 호출은 무상태 — 전체를 다시 보낸다
+
+LLM API 는 **무상태(stateless)** 다. 서버는 직전 호출을 기억하지 않으므로, "대화가
+이어진다"는 건 전적으로 **`run_turn` 이 매 반복마다 지금까지의 전부를 다시 실어
+보내기 때문**이다. 모델이 아는 맥락 = 이번 요청 body 에 담긴 것뿐이다.
+
+매 반복이 보내는 `CompletionRequest`(`scv-core::provider`)는 **`system`(선두 1개) +
+`messages`(누적 히스토리 전체) + `tools`(전체 스키마)** + 생성 파라미터
+(`max_tokens`/`effort`/`thinking`)로 구성된다. 한 사용자 턴이 도구를 부르면 `messages`
+가 매 반복마다 자라고, **자란 전체를 매번 다시 전송**한다.
+
+```mermaid
+sequenceDiagram
+    participant U as 사용자
+    participant A as Agent::run_turn
+    participant L as Provider (LLM · 무상태)
+
+    U->>A: auth.rs 버그 고쳐줘
+    Note over A: messages = 1개 (user)
+    A->>L: ① system + messages(1) + tools 전체
+    L-->>A: assistant = text + tool_use(read), stop=tool_use
+    Note over A: read 실행 → +assistant +user(tool_result) ⇒ 3개
+    A->>L: ② system + messages(3) + tools  (전부 다시)
+    L-->>A: assistant = tool_use(edit), stop=tool_use
+    Note over A: edit 실행 → +assistant +user(tool_result) ⇒ 5개
+    A->>L: ③ system + messages(5) + tools  (또 전부 다시)
+    L-->>A: assistant = text(고쳤습니다), stop=end_turn
+    A->>U: stop ≠ tool_use → 턴 종료
+```
+
+반복 상한은 `max_tool_iterations`(기본 50). 도구 결과는 **하나의 user 메시지에 모아**
+보낸다(분산하면 모델이 병렬 호출을 멈추도록 잘못 학습됨 — §6). 응답은 SSE 로 와서
+`MessageAssembler` 가 assistant 메시지 한 통으로 집계 → 히스토리에 push → 다음 반복에
+또 실려 나간다. 그래서 **전송량은 턴이 길수록 선형으로 커지고**, 이를 줄이려 프롬프트
+캐시(prefix 고정, §4.1)와 compaction(§4.2)이 붙는다.
+
 ## 3. 멀티 프로바이더 추상
 
 프로바이더마다 와이어 포맷이 다르다(Anthropic Messages API vs OpenAI Chat
@@ -86,6 +122,33 @@ flowchart BT
 새 프로바이더 추가 = `Provider` 한 개 구현 + `scv_providers::build` 에 `kind` 분기
 한 줄. 코어·도구·TUI 는 손대지 않는다.
 
+**같은 대화, 다른 와이어.** 코어가 든 중립 `messages`(§6)를 어댑터의 `to_wire` 가
+프로바이더 포맷으로 직렬화한다. 같은 한 줄(assistant 가 `read` 호출 → 그 결과)이 이렇게
+갈린다:
+
+Anthropic — 중립 모델과 거의 1:1, `content` 가 블록 배열:
+
+```json
+{"role":"assistant","content":[
+  {"type":"tool_use","id":"toolu_1","name":"read","input":{"path":"auth.rs"}}]}
+{"role":"user","content":[
+  {"type":"tool_result","tool_use_id":"toolu_1","content":"<파일내용>"}]}
+```
+
+OpenAI — 구조가 달라 어댑터가 재배치:
+
+```json
+{"role":"assistant","content":null,
+ "tool_calls":[{"id":"call_1","type":"function",
+   "function":{"name":"read","arguments":"{\"path\":\"auth.rs\"}"}}]}
+{"role":"tool","tool_call_id":"call_1","content":"<파일내용>"}
+```
+
+어댑터가 흡수하는 차이: ① 도구 입력이 JSON **객체**(Anthropic) ↔ **문자열**
+`arguments`(OpenAI), ② 도구 결과가 `tool_result` 블록 ↔ 별도 `role:"tool"` 메시지,
+③ 시스템 프롬프트가 top-level `system` ↔ `messages[0]` 의 `role:"system"`. 덕분에
+루프와 세션은 이 차이를 전혀 모른다.
+
 ## 4. 4대 기능 상세
 
 ### 4.1 시스템 프롬프트 — 계층형 합성
@@ -122,14 +185,27 @@ flowchart BT
   `<dir>/<id>.jsonl` 에 메시지를 한 줄당 하나씩 저장 → `scv --resume <id>` 로 재개,
   사후 감사 가능. (구현이 `scv-cli` 에 있는 이유: 코어는 "어디에 저장할지"를 몰라야 함.)
 - 컨텍스트가 모델 윈도에 근접하면 `ContextManager` 가 히스토리를 줄인다(compaction).
-  전략은 trait 으로 교체 가능(`NoopContextManager` → 향후 두 가지):
+  대화가 길어지면 **매 요청마다 메시지 전체를 다시 모델에 보내야** 하므로, 어느
+  순간 윈도를 넘기지 않게 과거를 줄여야 한다. 전략은 trait 으로 교체 가능
+  (`NoopContextManager` → 향후 두 가지):
   - **트리거 신호**: 직전 응답의 `Usage.input_tokens` 를 **우선** 본다(추가 호출 0).
     임계치는 `[session].compact_threshold_tokens`(기본 150K). 첫 전송 전 거대 입력 등
     사전 점검이 필요할 때만 `Provider::count_tokens`(어댑터별)를 보조로 쓴다.
-  - `SummarizingContextManager` — 오래된 앞부분을 LLM 으로 요약(최근 턴은 verbatim
-    유지해 정밀도 보존). 요약 호출도 `Provider` 를 통해 한다.
-  - `ClearToolResultsManager` — 오래된 tool_result 를 *요약 말고 비운다*(context
-    editing). 원본은 디스크(세션 JSONL/파일)에서 도구로 정밀 재조회.
+  - `SummarizingContextManager` — **주류·기본 방식**. 오래된 앞부분을 LLM 으로 요약해
+    압축본으로 교체하고, 최근 턴은 verbatim 유지해 정밀도를 지킨다(요약 호출도
+    `Provider` 를 통해 한다). Claude Code 의 auto-compact, Codex 의 컨텍스트 요약이 이
+    방식이다. **트레이드오프**: 요약하느라 LLM 을 한 번 더 부르고(비용·지연), 요약이
+    빠뜨린 디테일은 되살릴 수 없다(손실적).
+  - `ClearToolResultsManager` — **보완 방식**(Anthropic 의 context editing /
+    "clear tool results" 와 같은 개념). 오래된 `tool_result` 를 요약하지 않고 그
+    **content 를 비운다**(플레이스홀더로 치환). 보통 컨텍스트에서 제일 무거운 게
+    `read`/`grep`/`web_fetch` 결과인데, 모델이 한 번 쓰고 나면 원문을 계속 들고 다닐
+    이유가 없다. **비워도 안전한 이유**: tool_result 의 원본이 사라지지 않기 때문이다 —
+    `read` 한 파일은 디스크에 그대로 있고, 과거 대화·도구결과는 세션 `<id>.jsonl` 에
+    남는다. 모델이 다시 필요하면 `read`/`transcript-search` 로 **원문을 그대로 재조회**
+    한다(요약본의 흐릿한 기억이 아니라 정밀 재조회). LLM 호출 0·무손실이 대신, 모델이
+    도구를 다시 부르는 왕복이 가끔 생긴다. **도구 결과가 재생성 가능한 코딩 에이전트에
+    특히 잘 맞는다** — 일반 챗봇엔 없는 성질이다.
 
 #### 세션 격리 (여러 세션 동시 실행)
 
