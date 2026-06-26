@@ -12,7 +12,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Parser;
 use scv_core::agent::Agent;
-use scv_core::context::NoopContextManager;
+use scv_core::context::SummarizingContextManager;
 use scv_core::provider::Effort;
 use scv_core::session::{Session, SessionId, SessionStore};
 use scv_core::system_prompt::SystemPromptBuilder;
@@ -102,12 +102,20 @@ async fn main() -> anyhow::Result<()> {
     let system_prompt = prompt.skills(&skills).build();
 
     // 6. 에이전트 조립. 취소 토큰은 한 턴 동안 공유한다(원샷 Ctrl-C 도 같은 토큰을 끈다).
+    //    컨텍스트 관리: 임계(compact_threshold_tokens) 초과 시 오래된 앞부분을 같은 모델로
+    //    요약(compaction)한다. 최근 KEEP_RECENT 개 메시지는 verbatim 유지(ROADMAP 3b).
+    let context = Arc::new(SummarizingContextManager::new(
+        provider.clone(),
+        model.clone(),
+        config.session.compact_threshold_tokens,
+        KEEP_RECENT_MESSAGES,
+    ));
     let cancel = CancellationToken::new();
     let agent = Agent {
         provider,
         tools,
         permissions,
-        context: Arc::new(NoopContextManager),
+        context,
         model,
         system_prompt,
         max_tokens: config.agent.max_tokens,
@@ -209,6 +217,9 @@ fn expand_tilde(path: &str) -> std::path::PathBuf {
         None => std::path::PathBuf::from(path),
     }
 }
+
+/// compaction 시 verbatim 으로 보존할 최근 메시지 수(그 이전은 요약으로 접는다).
+const KEEP_RECENT_MESSAGES: usize = 8;
 
 /// 에이전트 기본 정체성/행동 규칙. 시스템 프롬프트의 안정적 prefix.
 const BASE_IDENTITY: &str = "You are scv, a coding agent that works in the user's terminal. \

@@ -218,8 +218,9 @@ OpenAI — 구조가 달라 어댑터가 재배치:
   사후 감사 가능. (구현이 `scv-cli` 에 있는 이유: 코어는 "어디에 저장할지"를 몰라야 함.)
 - 컨텍스트가 모델 윈도에 근접하면 `ContextManager` 가 히스토리를 줄인다(compaction).
   대화가 길어지면 **매 요청마다 메시지 전체를 다시 모델에 보내야** 하므로, 어느
-  순간 윈도를 넘기지 않게 과거를 줄여야 한다. 전략은 trait 으로 교체 가능
-  (`NoopContextManager` → 향후 두 가지):
+  순간 윈도를 넘기지 않게 과거를 줄여야 한다. 전략은 trait 으로 교체 가능하며 셋 다 구현돼
+  있다(`scv-cli` 기본은 `SummarizingContextManager`). `prepare(messages, last_input_tokens)`
+  가 직전 응답의 입력 토큰을 트리거 신호로 받는다:
   - **트리거 신호**: 직전 응답의 `Usage.input_tokens` 를 **우선** 본다(추가 호출 0).
     임계치는 `[session].compact_threshold_tokens`(기본 150K). 첫 전송 전 거대 입력 등
     사전 점검이 필요할 때만 `Provider::count_tokens`(어댑터별)를 보조로 쓴다.

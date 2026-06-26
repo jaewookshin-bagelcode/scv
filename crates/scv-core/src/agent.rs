@@ -85,6 +85,8 @@ impl Agent {
     ) -> Result<()> {
         session.push(Message::user(user_input));
         let cancel = &self.tool_ctx.cancel;
+        // compaction 트리거 신호: 직전 응답의 입력 토큰 수(MessageStop usage). 첫 턴은 0.
+        let mut last_input_tokens: u64 = 0;
 
         for iteration in 0..self.max_tool_iterations {
             // 협조적 취소 ①: 이터레이션 진입부 체크포인트.
@@ -93,8 +95,11 @@ impl Agent {
                 return Err(Error::Cancelled);
             }
 
-            // 1. 컨텍스트 준비(필요 시 compaction).
-            let messages = self.context.prepare(session.messages.clone()).await?;
+            // 1. 컨텍스트 준비(임계 초과 시 compaction — 직전 입력 토큰을 신호로 넘긴다).
+            let messages = self
+                .context
+                .prepare(session.messages.clone(), last_input_tokens)
+                .await?;
 
             // 2. 요청 구성 → 스트리밍 호출.
             let request = CompletionRequest {
@@ -120,8 +125,10 @@ impl Agent {
                         None => break false,
                         Some(event) => {
                             let event = event?;
-                            if let StreamEvent::MessageStop { stop_reason: sr, .. } = &event {
+                            if let StreamEvent::MessageStop { stop_reason: sr, usage } = &event {
                                 stop_reason = *sr;
+                                // 다음 이터레이션의 compaction 트리거 신호로 쓴다.
+                                last_input_tokens = usage.input_tokens;
                             }
                             observer.on_event(&AgentEvent::Stream(event.clone())).await;
                             assembler.apply(event);
