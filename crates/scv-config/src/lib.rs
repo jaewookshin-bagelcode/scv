@@ -18,7 +18,10 @@ use serde::Deserialize;
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("failed to read config {path}: {source}")]
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("failed to parse config: {0}")]
     Parse(#[from] toml::de::Error),
     #[error("env var `{0}` (api_key_env) is not set")]
@@ -50,7 +53,11 @@ pub struct AgentConfig {
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        Self { max_tokens: 16000, effort: "high".into(), max_tool_iterations: 50 }
+        Self {
+            max_tokens: 16000,
+            effort: "high".into(),
+            max_tool_iterations: 50,
+        }
     }
 }
 
@@ -62,7 +69,10 @@ pub struct SessionConfig {
 
 impl Default for SessionConfig {
     fn default() -> Self {
-        Self { dir: "~/.scv/sessions".into(), compact_threshold_tokens: 150_000 }
+        Self {
+            dir: "~/.scv/sessions".into(),
+            compact_threshold_tokens: 150_000,
+        }
     }
 }
 
@@ -94,20 +104,71 @@ pub struct ProviderConfig {
 }
 
 impl Config {
-    /// 표준 위치들에서 설정을 읽어 병합한다.
+    /// `~/.config/scv/config.toml` 을 읽어 파싱한다(다단계 병합은 roadmap 4d).
     pub fn load() -> Result<Self, ConfigError> {
-        // TODO: figment/serde 병합으로 다단계 오버라이드 구현.
-        //       지금은 골격 — 사용자 설정 파일 한 곳만 읽는다.
-        let path = dirs::config_dir()
-            .map(|d| d.join("scv/config.toml"))
-            .unwrap_or_else(|| PathBuf::from("config/config.example.toml"));
-        let text = std::fs::read_to_string(&path)
-            .map_err(|source| ConfigError::Io { path: path.clone(), source })?;
+        let path = Self::config_path();
+        let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Io {
+            path: path.clone(),
+            source,
+        })?;
         Ok(toml::from_str(&text)?)
+    }
+
+    /// 설정 파일 경로. `SCV_CONFIG` 환경변수가 있으면 그 경로, 없으면
+    /// `~/.config/scv/config.toml`. **cwd 와 무관**(홈 기준)이라 scv 를 어느 디렉터리에서
+    /// 실행해도 같은 설정을 읽는다 — 작업 대상은 cwd, 설정은 홈에 둔다.
+    fn config_path() -> PathBuf {
+        if let Some(custom) = std::env::var_os("SCV_CONFIG") {
+            return PathBuf::from(custom);
+        }
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        home.join(".config/scv/config.toml")
     }
 
     /// 기본 프로바이더 설정을 찾는다.
     pub fn default_provider(&self) -> Option<&ProviderConfig> {
-        self.providers.iter().find(|p| p.id == self.default_provider)
+        self.providers
+            .iter()
+            .find(|p| p.id == self.default_provider)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_minimal_config_with_defaults() {
+        let toml_str = r#"
+default_provider = "openai"
+
+[[providers]]
+id = "openai"
+kind = "openai"
+model = "gpt-5.5"
+api_key_env = "OPENAI_API_KEY"
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse");
+        assert_eq!(cfg.default_provider, "openai");
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(cfg.default_provider().expect("provider").model, "gpt-5.5");
+        // 생략된 섹션은 기본값으로 채워진다(serde default).
+        assert_eq!(cfg.agent.max_tokens, 16000);
+        assert_eq!(cfg.session.compact_threshold_tokens, 150_000);
+    }
+
+    #[test]
+    fn unknown_default_provider_resolves_to_none() {
+        let cfg: Config = toml::from_str("default_provider = \"missing\"\n").expect("parse");
+        assert!(cfg.default_provider().is_none());
+    }
+
+    #[test]
+    fn config_path_respects_scv_config_env() {
+        std::env::set_var("SCV_CONFIG", "/tmp/custom-scv.toml");
+        assert_eq!(Config::config_path(), PathBuf::from("/tmp/custom-scv.toml"));
+        std::env::remove_var("SCV_CONFIG");
     }
 }
