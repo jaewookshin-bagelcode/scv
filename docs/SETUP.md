@@ -167,8 +167,9 @@ cargo run --bin scv -- --provider openai --model o4-mini "이 repo 구조를 한
 cargo run --bin scv -- --provider openai --model gpt-4o --effort none "안녕, 한 줄로 자기소개 해줘"
 ```
 
-- 설정 파일은 **cwd 와 무관하게** `~/.config/scv/config.toml` 을 읽는다(`SCV_CONFIG`
-  환경변수로 다른 경로 지정 가능). 없으면 그 경로를 알려주는 에러가 난다 — §3.2 로 만든다.
+- 설정은 **다단계 병합**(뒤가 앞을 덮음): `~/.config/scv/config.toml`(`SCV_CONFIG` override)
+  → 프로젝트 `./.scv/config.toml`(cwd 기준) → 환경변수 `SCV_*`(중첩은 `__`) → CLI 플래그.
+  누락 파일은 건너뛰므로 사용자 설정만 있어도 된다.
 - 다른 OpenAI 호환 엔드포인트/게이트웨이(사내·OpenRouter·로컬 LLM)는
   `[[providers]].base_url` 로 바꾼다(경로 A). 단 게이트웨이가 `max_completion_tokens`·
   `stream_options.include_usage`·`reasoning_effort`·`tool_calls` 를 받아줘야 하고, 미지원이면

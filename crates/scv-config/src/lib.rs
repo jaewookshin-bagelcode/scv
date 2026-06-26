@@ -1,31 +1,27 @@
-//! 설정 로딩.
+//! 설정 로딩 — **다단계 병합**(뒤가 앞을 덮음, `docs/ROADMAP.md` 4d):
+//!   내장 기본값(serde default) → `~/.config/scv/config.toml`(또는 `SCV_CONFIG`)
+//!   → `./.scv/config.toml`(프로젝트, cwd 기준) → 환경변수 `SCV_*`.
+//! CLI 플래그는 그 위에서 합성 루트(scv-cli)가 덮는다(`--provider`/`--model`/… ).
 //!
-//! **현재 구현**: `~/.config/scv/config.toml` 한 곳을 읽어 파싱한다(`Config::load`).
-//! 다단계 병합은 아직 없다 — 단일 파일이 전부다.
-//! **계획(`docs/ROADMAP.md` 4d)**: 뒤가 앞을 덮는 다단계 병합 —
-//!   내장 기본값 → `~/.config/scv/config.toml` → `./.scv/config.toml`(프로젝트)
-//!   → 환경변수(SCV_*) → CLI 플래그.
+//! 병합은 [`figment`] 으로 한다. 환경변수 중첩 키는 `__` 로 구분한다
+//! (예: `SCV_AGENT__MAX_TOKENS=32000` → `agent.max_tokens`, `SCV_DEFAULT_PROVIDER=ollama`).
 //!
 //! 비밀(API 키)은 설정 파일에 두지 않는다. 설정에는 "키를 읽어올 환경변수 이름"
 //! (`api_key_env`)만 두고, 실제 값은 런타임에 환경에서 읽는다.
 
 #![warn(rust_2018_idioms, unreachable_pub)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use figment::providers::{Env, Format, Toml};
+use figment::Figment;
 use serde::Deserialize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("failed to read config {path}: {source}")]
-    Io {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    #[error("failed to parse config: {0}")]
-    Parse(#[from] toml::de::Error),
-    #[error("env var `{0}` (api_key_env) is not set")]
-    MissingApiKey(String),
+    // figment::Error 가 커서(>200B) Result 가 비대해진다 → 박싱(clippy::result_large_err).
+    #[error("config merge/parse failed: {0}")]
+    Figment(Box<figment::Error>),
 }
 
 /// 최상위 설정.
@@ -125,20 +121,26 @@ pub struct ProviderConfig {
 }
 
 impl Config {
-    /// `~/.config/scv/config.toml` 을 읽어 파싱한다(다단계 병합은 roadmap 4d).
+    /// 다단계 병합으로 설정을 읽는다(뒤가 앞을 덮음): 사용자 파일 → 프로젝트 파일 → `SCV_*`
+    /// 환경변수. 누락 파일은 건너뛴다(빈 레이어). 서브섹션의 빠진 값은 serde 기본값으로 채워진다.
     pub fn load() -> Result<Self, ConfigError> {
-        let path = Self::config_path();
-        let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        Ok(toml::from_str(&text)?)
+        Self::figment(&Self::user_path(), &Self::project_path())
+            .extract()
+            .map_err(|e| ConfigError::Figment(Box::new(e)))
     }
 
-    /// 설정 파일 경로. `SCV_CONFIG` 환경변수가 있으면 그 경로, 없으면
-    /// `~/.config/scv/config.toml`. **cwd 와 무관**(홈 기준)이라 scv 를 어느 디렉터리에서
-    /// 실행해도 같은 설정을 읽는다 — 작업 대상은 cwd, 설정은 홈에 둔다.
-    fn config_path() -> PathBuf {
+    /// 병합 레이어를 조립한다(테스트가 경로를 주입할 수 있게 분리). `Env` 레이어는 프로세스
+    /// 환경을 읽으므로 항상 마지막(최우선)이다.
+    fn figment(user: &Path, project: &Path) -> Figment {
+        Figment::new()
+            .merge(Toml::file(user))
+            .merge(Toml::file(project))
+            .merge(Env::prefixed("SCV_").split("__"))
+    }
+
+    /// 사용자 설정 경로. `SCV_CONFIG` 가 있으면 그 경로, 없으면 `~/.config/scv/config.toml`.
+    /// **cwd 와 무관**(홈 기준).
+    fn user_path() -> PathBuf {
         if let Some(custom) = std::env::var_os("SCV_CONFIG") {
             return PathBuf::from(custom);
         }
@@ -146,6 +148,11 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_default();
         home.join(".config/scv/config.toml")
+    }
+
+    /// 프로젝트 설정 경로(cwd 기준 `./.scv/config.toml`). 작업 중인 repo 별 오버라이드.
+    fn project_path() -> PathBuf {
+        PathBuf::from("./.scv/config.toml")
     }
 
     /// 기본 프로바이더 설정을 찾는다.
@@ -215,9 +222,64 @@ spinner = "ascii"
     }
 
     #[test]
-    fn config_path_respects_scv_config_env() {
+    fn user_path_respects_scv_config_env() {
         std::env::set_var("SCV_CONFIG", "/tmp/custom-scv.toml");
-        assert_eq!(Config::config_path(), PathBuf::from("/tmp/custom-scv.toml"));
+        assert_eq!(Config::user_path(), PathBuf::from("/tmp/custom-scv.toml"));
         std::env::remove_var("SCV_CONFIG");
+    }
+
+    /// 프로젝트 파일이 사용자 파일을 키 단위로 덮어쓴다(다단계 병합, 4d).
+    #[test]
+    fn project_layer_overrides_user_layer() {
+        let dir = std::env::temp_dir().join(format!("scv-cfg-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let user = dir.join("user.toml");
+        let project = dir.join("project.toml");
+        std::fs::write(
+            &user,
+            r#"
+default_provider = "ollama"
+[agent]
+max_tokens = 16000
+effort = "high"
+max_tool_iterations = 50
+[[providers]]
+id = "ollama"
+kind = "ollama"
+model = "qwen3.5:9b"
+"#,
+        )
+        .unwrap();
+        // 프로젝트는 default_provider 와 agent.max_tokens 만 덮는다.
+        std::fs::write(
+            &project,
+            "default_provider = \"openai\"\n[agent]\nmax_tokens = 32000\n",
+        )
+        .unwrap();
+
+        let cfg: Config = Config::figment(&user, &project).extract().expect("merge");
+        assert_eq!(cfg.default_provider, "openai"); // 프로젝트가 덮음
+        assert_eq!(cfg.agent.max_tokens, 32000); // 프로젝트가 덮음
+                                                 // 프로젝트가 안 건드린 사용자/기본값은 유지된다.
+        assert_eq!(cfg.agent.effort, "high");
+        assert_eq!(cfg.providers.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 누락된 프로젝트 파일은 빈 레이어로 건너뛴다(사용자 설정만으로 동작).
+    #[test]
+    fn missing_project_file_is_skipped() {
+        let dir = std::env::temp_dir().join(format!("scv-cfg-noproj-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let user = dir.join("user.toml");
+        std::fs::write(&user, "default_provider = \"ollama\"\n").unwrap();
+        let cfg: Config = Config::figment(&user, &dir.join("absent.toml"))
+            .extract()
+            .expect("merge");
+        assert_eq!(cfg.default_provider, "ollama");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -27,6 +27,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9" # SKILL.md frontmatter 파싱
 toml = "0.8"       # config.toml 파싱
+figment = { version = "0.10", features = ["toml", "env"] } # 설정 다단계 병합(4d)
 
 # --- HTTP / SSE (Anthropic·OpenAI 어댑터에서 사용) ---
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
