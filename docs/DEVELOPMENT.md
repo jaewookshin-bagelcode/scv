@@ -59,7 +59,7 @@ scripts/coverage.sh                                        # 티어별 커버리
 scv-core        도메인 모델 + trait(Provider/Tool/Skill/ContextManager/SessionStore/...) + agentic loop  ← 추상의 중심
 scv-providers   Provider 구현 — openai · openai-compat · ollama(openai 어댑터 재사용) · anthropic
 scv-tools       Tool 구현 — read/write/edit/bash/glob/grep/web_fetch/transcript_search + 권한 정책
-scv-skills      SKILL.md 로더 + 내장 스킬(compact) — progressive disclosure
+scv-skills      SKILL.md 로더(사용자 스킬) — progressive disclosure
 scv-config      설정 로드 + 다단계 병합(figment)
 scv-tui         ratatui 기반 인터랙티브 UI — 스트림/사고 렌더 · 승인 모달 · 진행 표시 · 인터럽트
 scv-cli         바이너리 `scv` — 합성 루트(조립/부트스트랩)
