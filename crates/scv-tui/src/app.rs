@@ -26,8 +26,14 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use scv_core::agent::Agent;
 use scv_core::message::{AgentEvent, StreamEvent};
+use scv_core::provider::Provider;
 use scv_core::session::{Session, SessionStore};
 use scv_core::tool::{CancellationToken, PermissionLevel};
+
+/// 합성 루트(scv-cli)가 주입하는 "프로바이더 빌드 팩토리". 프로바이더 id 를 받아 그
+/// 프로바이더와 기본 모델을 만든다. scv-tui 는 설정/`scv_providers` 를 모르므로(코어만 의존),
+/// 실제 빌드는 이 클로저가 한다(`/provider` 명령이 호출).
+pub type MakeProvider<'a> = dyn Fn(&str) -> scv_core::Result<(Arc<dyn Provider>, String)> + 'a;
 
 use crate::observer::ChannelObserver;
 use crate::permission::{InteractivePermissionGate, PermissionRequest};
@@ -88,6 +94,36 @@ pub(crate) fn decode_key(key: KeyEvent) -> Key {
     }
 }
 
+/// 슬래시 명령. 입력이 `/` 로 시작하면 일반 프롬프트 대신 이걸로 해석한다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Command {
+    /// 프로바이더 전환(그 프로바이더의 기본 모델로).
+    Provider(String),
+    /// 현재 프로바이더에서 모델만 전환.
+    Model(String),
+    /// 사용 가능한 프로바이더 목록.
+    Providers,
+    /// 도움말.
+    Help,
+    /// 알 수 없는/인자 빠진 명령.
+    Unknown(String),
+}
+
+/// 입력이 슬래시 명령이면 파싱한다(아니면 `None` → 일반 프롬프트로 처리) — **순수**.
+pub(crate) fn parse_command(line: &str) -> Option<Command> {
+    let rest = line.trim().strip_prefix('/')?;
+    let mut it = rest.split_whitespace();
+    let cmd = it.next().unwrap_or("");
+    let arg = it.next().unwrap_or("");
+    Some(match (cmd, arg) {
+        ("provider" | "p", a) if !a.is_empty() => Command::Provider(a.to_string()),
+        ("model" | "m", a) if !a.is_empty() => Command::Model(a.to_string()),
+        ("providers", _) => Command::Providers,
+        ("help" | "h" | "?", _) => Command::Help,
+        (other, _) => Command::Unknown(other.to_string()),
+    })
+}
+
 /// 진행 중인 승인 모달.
 struct Modal {
     tool: String,
@@ -121,6 +157,8 @@ pub struct App {
     /// idle 에서 Ctrl-C 한 번 누른 상태(더블 프레스로 종료).
     quit_armed: bool,
     hint: String,
+    /// 현재 프로바이더·모델 라벨(입력창 제목에 표시). `/provider`·`/model` 로 갱신.
+    model_label: String,
 }
 
 impl std::fmt::Debug for App {
@@ -147,6 +185,7 @@ impl App {
             modal: None,
             quit_armed: false,
             hint: String::new(),
+            model_label: String::new(),
         }
     }
 
@@ -157,7 +196,10 @@ impl App {
         mut agent: Agent,
         mut session: Session,
         store: &dyn SessionStore,
+        providers: &[String],
+        make_provider: &MakeProvider<'_>,
     ) -> scv_core::Result<()> {
+        self.model_label = format!("{}·{}", agent.provider.id(), agent.model);
         let guard = RawModeGuard::enter().map_err(|e| map_io("enter raw mode", e))?;
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend).map_err(|e| map_io("init terminal", e))?;
@@ -186,6 +228,13 @@ impl App {
                 Prompt::Quit => break,
             };
             if prompt.trim().is_empty() {
+                continue;
+            }
+            // 슬래시 명령은 모델 턴 대신 즉시 처리(프로바이더/모델 전환 등).
+            if let Some(cmd) = parse_command(&prompt) {
+                self.transcript.push(format!("› {prompt}"));
+                self.handle_command(cmd, &mut agent, providers, make_provider);
+                self.render(&mut terminal)?;
                 continue;
             }
             self.transcript.push(format!("› {prompt}"));
@@ -392,6 +441,45 @@ impl App {
         }
     }
 
+    /// 슬래시 명령 처리(프로바이더/모델 전환 등). 결과를 transcript 에 한 줄로 남긴다.
+    /// 프로바이더 전환은 주입된 `make_provider` 가 실제 빌드를 한다(scv-cli).
+    fn handle_command(
+        &mut self,
+        cmd: Command,
+        agent: &mut Agent,
+        providers: &[String],
+        make_provider: &MakeProvider<'_>,
+    ) {
+        match cmd {
+            Command::Provider(id) => match make_provider(&id) {
+                Ok((provider, model)) => {
+                    agent.provider = provider;
+                    agent.model = model.clone();
+                    self.model_label = format!("{id}·{model}");
+                    self.transcript.push(format!("[switched: {id} · {model}]"));
+                }
+                Err(e) => self
+                    .transcript
+                    .push(format!("[provider switch failed: {e}]")),
+            },
+            Command::Model(m) => {
+                agent.model = m.clone();
+                self.model_label = format!("{}·{m}", agent.provider.id());
+                self.transcript.push(format!("[switched model: {m}]"));
+            }
+            Command::Providers => {
+                self.transcript
+                    .push(format!("[providers: {}]", providers.join(", ")));
+            }
+            Command::Help => self
+                .transcript
+                .push("[commands: /provider <id>, /model <id>, /providers, /help]".to_string()),
+            Command::Unknown(c) => self
+                .transcript
+                .push(format!("[unknown command: /{c} — try /help]")),
+        }
+    }
+
     /// 누적된 스트리밍 텍스트를 transcript 로 옮긴다(빈 건 버림). 사고(thinking)는 휘발성이라
     /// 보존하지 않고 비운다.
     fn flush_live(&mut self) {
@@ -474,8 +562,13 @@ impl App {
     }
 
     fn draw_input(&self, f: &mut Frame<'_>, area: Rect) {
+        let title = if self.model_label.is_empty() {
+            " message ".to_string()
+        } else {
+            format!(" message — {} (/help) ", self.model_label)
+        };
         let para = Paragraph::new(format!("› {}", self.input))
-            .block(Block::default().borders(Borders::ALL).title(" message "));
+            .block(Block::default().borders(Borders::ALL).title(title));
         f.render_widget(para, area);
     }
 
@@ -728,5 +821,119 @@ mod tests {
             reply: tx,
         });
         assert_eq!(app.modal.as_ref().unwrap().summary, "rm -rf build");
+    }
+
+    #[test]
+    fn parse_command_recognizes_slash_commands() {
+        assert_eq!(
+            parse_command("/provider openai"),
+            Some(Command::Provider("openai".into()))
+        );
+        assert_eq!(
+            parse_command("/p ollama"),
+            Some(Command::Provider("ollama".into()))
+        );
+        assert_eq!(
+            parse_command("/model gpt-4o"),
+            Some(Command::Model("gpt-4o".into()))
+        );
+        assert_eq!(
+            parse_command("/m qwen3.5:9b"),
+            Some(Command::Model("qwen3.5:9b".into()))
+        );
+        assert_eq!(parse_command("/providers"), Some(Command::Providers));
+        assert_eq!(parse_command("/help"), Some(Command::Help));
+        // 인자 빠진 provider/model → Unknown(=help 유도).
+        assert_eq!(
+            parse_command("/provider"),
+            Some(Command::Unknown("provider".into()))
+        );
+        assert_eq!(
+            parse_command("/bogus"),
+            Some(Command::Unknown("bogus".into()))
+        );
+        // 슬래시로 시작하지 않으면 일반 프롬프트.
+        assert_eq!(parse_command("안녕"), None);
+        assert_eq!(parse_command("  hi /not a command"), None);
+    }
+
+    // ── handle_command 용 최소 스텁(Agent 조립) ──
+    use scv_core::context::NoopContextManager;
+    use scv_core::message::Message;
+    use scv_core::provider::{CompletionRequest, EventStream, ModelInfo, ToolSchema};
+    use scv_core::tool::{PermissionGate, ToolContext, ToolRegistry};
+
+    struct StubProvider(&'static str);
+    #[async_trait::async_trait]
+    impl Provider for StubProvider {
+        fn id(&self) -> &str {
+            self.0
+        }
+        fn models(&self) -> &[ModelInfo] {
+            &[]
+        }
+        async fn stream(&self, _r: CompletionRequest) -> scv_core::Result<EventStream> {
+            unreachable!()
+        }
+        async fn count_tokens(
+            &self,
+            _s: Option<&str>,
+            _m: &[Message],
+            _t: &[ToolSchema],
+        ) -> scv_core::Result<u64> {
+            Ok(0)
+        }
+    }
+    struct AllowGate;
+    #[async_trait::async_trait]
+    impl PermissionGate for AllowGate {
+        async fn decide(&self, _t: &str, _i: &serde_json::Value) -> PermissionLevel {
+            PermissionLevel::Allow
+        }
+    }
+    fn stub_agent() -> Agent {
+        Agent {
+            provider: Arc::new(StubProvider("ollama")),
+            tools: ToolRegistry::new(),
+            permissions: Arc::new(AllowGate),
+            context: Arc::new(NoopContextManager),
+            model: "qwen3.5:9b".into(),
+            system_prompt: String::new(),
+            max_tokens: 16,
+            effort: None,
+            max_tool_iterations: 5,
+            tool_ctx: ToolContext {
+                workdir: std::env::temp_dir(),
+                cancel: CancellationToken::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn handle_command_switches_provider_and_model() {
+        let mut app = App::new(SpinnerStyle::Ascii);
+        let mut agent = stub_agent();
+        // 가짜 팩토리: openai → (openai provider, "gpt-5.5").
+        let make = |id: &str| -> scv_core::Result<(Arc<dyn Provider>, String)> {
+            match id {
+                "openai" => Ok((Arc::new(StubProvider("openai")), "gpt-5.5".to_string())),
+                other => Err(scv_core::Error::Provider(format!("no {other}"))),
+            }
+        };
+        // /provider openai → provider·model 교체.
+        app.handle_command(Command::Provider("openai".into()), &mut agent, &[], &make);
+        assert_eq!(agent.provider.id(), "openai");
+        assert_eq!(agent.model, "gpt-5.5");
+        assert_eq!(app.model_label, "openai·gpt-5.5");
+
+        // /model 교체(프로바이더 유지).
+        app.handle_command(Command::Model("o4-mini".into()), &mut agent, &[], &make);
+        assert_eq!(agent.provider.id(), "openai");
+        assert_eq!(agent.model, "o4-mini");
+
+        // 알 수 없는 프로바이더 → 실패 메시지, 상태 불변.
+        app.handle_command(Command::Provider("nope".into()), &mut agent, &[], &make);
+        assert_eq!(agent.provider.id(), "openai"); // 그대로
+        assert!(app.transcript.iter().any(|l| l.contains("switch failed")));
     }
 }

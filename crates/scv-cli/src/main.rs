@@ -204,9 +204,36 @@ async fn main() -> anyhow::Result<()> {
         None => {
             // 인터랙티브 TUI: 대화 루프·권한 모달·인터럽트·진행 표시·턴별 세션 저장(§4.5).
             // App 이 agent.permissions 를 대화형 게이트로 감싸 Ask 도구를 모달로 승인받는다.
+            // `/provider`·`/model` 슬래시 명령으로 실행 중 전환할 수 있게, 프로바이더 빌드
+            // 팩토리(설정·키 접근은 합성 루트만 가능)와 사용 가능한 프로바이더 목록을 주입한다.
+            let provider_ids: Vec<String> = config.providers.iter().map(|p| p.id.clone()).collect();
+            let make_provider =
+                |id: &str| -> scv_core::Result<(Arc<dyn scv_core::provider::Provider>, String)> {
+                    let pconf = config
+                        .providers
+                        .iter()
+                        .find(|p| p.id == id)
+                        .ok_or_else(|| {
+                            scv_core::Error::Provider(format!("프로바이더 `{id}` 설정 없음"))
+                        })?;
+                    let api_key = match pconf.api_key_env.as_deref() {
+                        Some(env) => std::env::var(env).map_err(|_| {
+                            scv_core::Error::Provider(format!("환경변수 `{env}` 미설정"))
+                        })?,
+                        None => String::new(),
+                    };
+                    let provider = scv_providers::build(
+                        &pconf.kind,
+                        pconf.model.clone(),
+                        api_key,
+                        pconf.base_url.clone(),
+                    )?;
+                    Ok((provider, pconf.model.clone()))
+                };
+
             let spinner = scv_tui::SpinnerStyle::from_config(&config.ui.spinner);
             let mut app = scv_tui::App::new(spinner);
-            app.run(agent, session, &store)
+            app.run(agent, session, &store, &provider_ids, &make_provider)
                 .await
                 .context("TUI 실행 실패")?;
         }

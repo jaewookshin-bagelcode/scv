@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use scv_core::agent::Observer;
 use scv_core::message::{AgentEvent, StreamEvent};
 
-pub use app::App;
+pub use app::{App, MakeProvider};
 pub use phase::SpinnerStyle;
 
 /// 루프 통지를 stdout 에 흘려보내는 최소 관찰자(원샷/디버그용).
