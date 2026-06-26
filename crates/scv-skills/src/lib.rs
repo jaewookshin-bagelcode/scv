@@ -32,7 +32,9 @@ pub fn load_dirs<P: AsRef<Path>>(dirs: &[P]) -> anyhow::Result<SkillRegistry> {
             if manifest.is_file() {
                 match load_one(&skill_dir, &manifest) {
                     Ok(skill) => registry.insert(skill),
-                    Err(e) => tracing::warn!(path = %manifest.display(), error = %e, "skill load failed"),
+                    Err(e) => {
+                        tracing::warn!(path = %manifest.display(), error = %e, "skill load failed")
+                    }
                 }
             }
         }
@@ -46,7 +48,11 @@ fn load_one(dir: &Path, manifest: &Path) -> anyhow::Result<Skill> {
     let (front, body) = split_frontmatter(&raw)
         .ok_or_else(|| anyhow::anyhow!("SKILL.md missing `---` frontmatter"))?;
     let meta: SkillMeta = serde_yaml::from_str(front)?;
-    Ok(Skill { meta, dir: dir.to_path_buf(), body: Some(body.to_string()) })
+    Ok(Skill {
+        meta,
+        dir: dir.to_path_buf(),
+        body: Some(body.to_string()),
+    })
 }
 
 /// `---\n<yaml>\n---\n<body>` 를 (yaml, body) 로 가른다.
@@ -56,4 +62,41 @@ fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
     let front = &rest[..end];
     let body = &rest[end + "\n---\n".len()..];
     Some((front, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_frontmatter_from_body() {
+        let (front, body) = split_frontmatter("---\nname: x\n---\nbody here").expect("split");
+        assert!(front.contains("name: x"));
+        assert_eq!(body, "body here");
+    }
+
+    #[test]
+    fn split_requires_leading_fence() {
+        assert!(split_frontmatter("no fence at all").is_none());
+    }
+
+    #[test]
+    fn load_dirs_reads_skill_md_into_registry() {
+        let dir = std::env::temp_dir().join(format!("scv-skills-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let skill_dir = dir.join("pdf");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: pdf-report\ndescription: make a PDF\n---\nsteps...",
+        )
+        .unwrap();
+
+        let reg = load_dirs(std::slice::from_ref(&dir)).expect("load");
+        let skill = reg.get("pdf-report").expect("registered");
+        assert_eq!(skill.meta.description, "make a PDF");
+        assert_eq!(skill.body.as_deref(), Some("steps..."));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
