@@ -34,7 +34,7 @@ cargo test --workspace                                     # 테스트
 - 동작/인터페이스/공개 API → `docs/ARCHITECTURE.md` (+ 해당 항목 doc 주석)
 - 기본값/설정 키 → `config/config.example.toml`, `docs/SETUP.md`
 - 규칙/컨벤션 → `docs/CODING_RULES.md`
-- 스캐폴드 `todo!()` 를 채웠다 → `docs/ARCHITECTURE.md` §8 로드맵에서 그 항목 제거
+- 스캐폴드 `todo!()` 를 채웠다 → `docs/ROADMAP.md` 에서 그 항목 체크
 - 같은 사실이 두 문서에 중복돼 충돌하지 않는가(사실은 한 곳 + 나머지는 링크)
 
 빠른 점검:
@@ -58,7 +58,7 @@ grep -rEo '\]\(\.{0,2}/[^)]+\)' docs README.md AGENTS.md CLAUDE.md 2>/dev/null
 
 ```text
 ✓ fmt(--check)   ✓ clippy(0 warnings)   ✓ test(NN passed)
-✓ SSOT: ARCHITECTURE §8 에서 'AnthropicProvider::stream' 항목 제거됨
+✓ SSOT: ROADMAP 에서 'OpenAiProvider::stream' 항목 체크됨
 ⚠ docs/SETUP.md 모델 id 가 config.example.toml 과 불일치 → 동기화 필요
 ✗ clippy: scv-tools/src/read.rs:42  unused variable `ctx`  (재현: cargo clippy -p scv-tools)
 ```

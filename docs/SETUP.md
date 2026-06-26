@@ -44,7 +44,7 @@ cargo build --release
 > 첫 빌드는 의존성 컴파일로 수 분 걸릴 수 있다. 이후엔 증분 빌드라 빠르다.
 >
 > 현재는 스캐폴드 단계다. 일부 함수는 `todo!()`/빈 스트림이며, 빌드는 통과하지만
-> 실제 LLM 호출/도구 실행은 아직 채워야 한다(`docs/ARCHITECTURE.md` §8 참고).
+> 실제 LLM 호출/도구 실행은 아직 채워야 한다(우선순위는 `docs/ROADMAP.md` 참고).
 
 ## 3. 설정
 
@@ -71,7 +71,9 @@ export SCV_LOG=info                    # trace|debug|info|warn|error
 
 ### 3.2 config.toml
 
-설정 탐색/병합 순서(뒤가 앞을 덮어씀):
+**현재**: `~/.config/scv/config.toml` 한 곳만 읽는다(단일 파일).
+
+**계획**(다단계 병합, 뒤가 앞을 덮어씀 — `docs/ROADMAP.md` 4d):
 
 ```
 내장 기본값 → ~/.config/scv/config.toml → ./.scv/config.toml(프로젝트) → 환경변수(SCV_*) → CLI 플래그

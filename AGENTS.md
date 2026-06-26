@@ -28,7 +28,7 @@ Cargo 워크스페이스. **의존성은 항상 `scv-core` 를 향한다(순환 
 | `crates/scv-cli` | 바이너리 `scv` — 합성 루트(조립/부트스트랩) |
 
 상태: **설계 + 코드 스캐폴드** 단계. 타입·trait·조립 골격은 있고 일부 함수는
-`todo!()`/빈 스트림이다. 채우는 순서는 `docs/ARCHITECTURE.md` §8 참고.
+`todo!()`/빈 스트림이다. 채우는 순서는 `docs/ROADMAP.md` 참고.
 
 ## 단일 출처(SSOT) 규칙 ★
 
@@ -43,10 +43,10 @@ Cargo 워크스페이스. **의존성은 항상 `scv-core` 를 향한다(순환 
   | 설계/아키텍처 | `docs/ARCHITECTURE.md` |
   | 코딩 규칙 | `docs/CODING_RULES.md` |
   | 설정/빌드/실행 | `docs/SETUP.md` |
-  | 남은 작업/로드맵 | `docs/ARCHITECTURE.md` §8 |
+  | 남은 작업/구현 순서 | `docs/ROADMAP.md` |
 - **구현 후 SSOT를 수정한다**: 코드가 문서와 어긋나면 **문서가 진실이 되도록** 같은
-  PR 에서 SSOT를 갱신한다. 예) 스캐폴드의 `todo!()` 를 채웠으면 §8 로드맵에서 그 항목을
-  지우고, 인터페이스/동작/기본값이 바뀌면 해당 문서를 함께 고친다.
+  PR 에서 SSOT를 갱신한다. 예) 스캐폴드의 `todo!()` 를 채웠으면 `docs/ROADMAP.md` 에서
+  그 항목을 체크하고, 인터페이스/동작/기본값이 바뀌면 해당 문서를 함께 고친다.
 - **중복하지 말고 링크한다**: 같은 사실을 두 문서에 베껴 쓰지 않는다(`CLAUDE.md` ↔
   `AGENTS.md` 처럼). 사실은 SSOT 한 곳, 나머지는 참조.
 - **충돌은 SSOT가 이긴다**: 두 곳이 어긋나면 SSOT를 기준으로 즉시 일치시킨다.
@@ -115,5 +115,6 @@ cargo run --bin scv                                        # 인터랙티브 TUI
 ## 더 읽기
 
 - 설계 전반: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
+- 구현 우선순위/로드맵: [`docs/ROADMAP.md`](./docs/ROADMAP.md)
 - 코딩 규칙(전문): [`docs/CODING_RULES.md`](./docs/CODING_RULES.md)
 - 세팅/빌드/실행: [`docs/SETUP.md`](./docs/SETUP.md)

@@ -24,11 +24,16 @@ pub enum PermissionLevel {
     Deny,
 }
 
-/// 권한 결정을 내려주는 게이트. CLI/TUI 가 사용자 응답을 받아 구현한다.
-/// (`scv-tools` 의 정적 정책 + TUI 의 대화형 프롬프트가 이를 구현한다.)
+/// 되돌리기 어려운 동작(`Ask`)에 대해 최종 허용 여부를 확정하는 게이트.
+/// (`scv-tools` 의 정적 정책 + TUI 의 대화형 프롬프트가 구현한다.)
+///
+/// 계약(루프 측): 도구가 `Ask` 를 요구할 때만 이 게이트를 부르고, **`Allow` 일 때만
+/// 실행**한다 — 그 외(`Ask`/`Deny`)는 거부(fail-closed). 따라서 사용자 동의를 받을 수
+/// 없는 비대화형 게이트는 `Allow` 를 돌려줘선 안 된다. `Ask` 를 그대로 돌려주면
+/// "승인 못 받음"으로 간주되어 거부된다.
 #[async_trait]
 pub trait PermissionGate: Send + Sync {
-    /// `tool` 이 `input` 으로 호출되려 할 때 허용 여부를 결정한다.
+    /// `tool` 이 `input` 으로 호출되려 할 때 최종 허용 여부를 결정한다.
     async fn decide(&self, tool: &str, input: &serde_json::Value) -> PermissionLevel;
 }
 

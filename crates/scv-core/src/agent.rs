@@ -144,12 +144,19 @@ impl Agent {
                 continue;
             };
 
-            // 권한 게이트: 정적 정책과 사용자 응답을 종합한다.
+            // 권한 결정. 도구가 선언한 기준 권한을 게이트가 최종 확정한다.
+            //  - Allow(읽기 전용 등 부작용 없음) → 게이트에 묻지 않고 허용.
+            //  - Deny(예: workdir 밖 경로) → 즉시 거부.
+            //  - Ask(되돌리기 어려운 동작) → 게이트(정적 정책 + 대화형)가 최종 결정.
             let level = match tool.permission(input) {
+                PermissionLevel::Allow => PermissionLevel::Allow,
                 PermissionLevel::Deny => PermissionLevel::Deny,
-                _ => self.permissions.decide(name, input).await,
+                PermissionLevel::Ask => self.permissions.decide(name, input).await,
             };
-            if level == PermissionLevel::Deny {
+            // fail-closed: 명시적 Allow 만 실행한다. 게이트가 끝내 Ask 를 돌려주면
+            // (대화형 게이트가 없어 동의를 못 받은 상태) 실행하지 않고 거부한다 —
+            // write/bash 같은 Ask 도구가 모달 없이 무단 실행되는 것을 막는다.
+            if level != PermissionLevel::Allow {
                 return Err(Error::PermissionDenied(name.to_string()));
             }
 

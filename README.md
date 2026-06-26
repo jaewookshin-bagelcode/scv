@@ -22,6 +22,7 @@ cargo run --bin scv                                   # 인터랙티브 TUI
 | 문서 | 내용 |
 |------|------|
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | 설계 개요 — agentic loop, 4대 기능, 멀티 프로바이더, 크레이트 구조 |
+| [`docs/ROADMAP.md`](./docs/ROADMAP.md) | 구현 우선순위 — 스캐폴드 → 동작 MVP 까지의 단계별 순서 |
 | [`docs/CODING_RULES.md`](./docs/CODING_RULES.md) | 코딩 규칙 — Rust 컨벤션, 에러/async/보안, LLM 연동 규칙 |
 | [`docs/SETUP.md`](./docs/SETUP.md) | 세팅 가이드 — 툴체인, 빌드, 설정, 개발 워크플로 |
 
@@ -43,4 +44,4 @@ core 와 다른 크레이트를 건드릴 필요가 없다.
 ## 상태
 
 설계 + 코드 스캐폴드 단계. 타입·trait·조립 골격이 완성돼 있고, 실제 LLM 호출/도구
-실행 채우기가 다음 작업이다 — [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §8.
+실행 채우기가 다음 작업이다 — 우선순위는 [`docs/ROADMAP.md`](./docs/ROADMAP.md).

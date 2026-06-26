@@ -31,7 +31,11 @@ pub fn default_registry() -> ToolRegistry {
     reg
 }
 
-/// 설정 기반 정적 권한 정책. 사용자 대화형 응답이 필요하면 TUI 게이트와 합성한다.
+/// 설정 기반 정적 권한 정책(비대화형). 대화형 동의가 필요하면 TUI 게이트와 합성한다.
+///
+/// 비대화형이라 사용자에게 물을 수 없다 → 루프는 `Allow` 만 실행하므로(fail-closed),
+/// `Ask` 도구를 TUI 없이 허용하려면 해당 도구에 명시적 `Allow` 오버라이드를 준다
+/// (`with_override`). 기본값 `Ask` 로 둔 도구는 모달이 붙기 전까지 거부된다.
 #[derive(Debug, Clone)]
 pub struct StaticPermissionGate {
     pub default: PermissionLevel,

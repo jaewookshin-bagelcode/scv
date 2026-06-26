@@ -175,6 +175,10 @@ flowchart BT
   - 위험 입력(workdir 밖 경로 등) → `Deny`
 - 게이팅은 `PermissionGate` trait 으로 분리: 정적 정책(`StaticPermissionGate`,
   설정 기반) + 대화형 프롬프트(TUI)를 합성한다.
+- **fail-closed**: 루프는 `Allow` 일 때만 도구를 실행한다. `read` 류 `Allow` 도구는
+  게이트를 거치지 않고 바로 실행하고, `Ask` 도구는 게이트가 동의를 받아 `Allow` 를
+  돌려줘야 실행된다 — 대화형 게이트가 없으면(`Ask` 가 그대로 남으면) 거부된다. 즉
+  `write`/`bash` 같은 비가역 도구가 권한 모달 없이 무단 실행되는 일은 없다.
 - **보안**: 모든 경로 입력은 `ToolContext.workdir` 안으로 제한(경로 탈출/심볼릭
   링크 방지). bash 명령은 모델이 만든 신뢰 불가 출력으로 취급한다.
 
@@ -274,22 +278,9 @@ enum StreamEvent {                          // 프로바이더 공통 정규화 
 
 ## 8. 다음 단계(스캐폴드 → 동작)
 
-현재 저장소는 **타입·trait·조립 골격**까지 완성된 스캐폴드다. 동작하는 MVP 까지의
-순서:
+현재 저장소는 **타입·trait·조립 골격**까지 완성된 스캐폴드다. 일부 함수는
+`todo!()`/빈 스트림이며, 빌드는 통과하지만 실제 LLM 호출·도구 실행은 아직 채워야 한다.
 
-1. `AnthropicProvider::stream` — 실제 SSE 파싱과 와이어 변환 채우기(가장 먼저).
-2. `MessageAssembler` — tool_use 집계 완성.
-3. `read` 외 내장 도구(`write`/`edit`/`bash`/`glob`/`grep`) 구현.
-4. `scv-tui::App` — ratatui 대화 루프 + 권한 모달.
-5. `FileSessionStore` 를 루프에 연결(`--resume`).
-6. `Provider::count_tokens` 어댑터 구현(Anthropic count 엔드포인트 / OpenAI tiktoken).
-   단, 루프의 compaction 신호는 returned usage(`MessageStop`)를 우선 사용.
-7. `ContextManager` 두 전략 — `SummarizingContextManager`(요약) /
-   `ClearToolResultsManager`(tool_result 비우기). 루프에 주입.
-8. 계획 도구 — `web_fetch`, `transcript-search`(정밀 추출). `Tool` 구현 + 레지스트리 등록.
-9. 세션 격리 — per-session git worktree(또는 임시 workdir) + 세션 파일 append-only/락
-   (§4.2 세션 격리 참고). 다중 세션을 한 프로세스서 돌릴 경우 `SessionManager`.
-10. `ProjectContextLoader` — AGENTS.md 탐색 체인(루트→하위→전역, CLAUDE.md 폴백) + 병합
-    (§4.1 참고). 결과를 `SystemPromptBuilder.project_context` 로 주입.
-
-각 단계는 독립 테스트 가능하도록 trait 경계에서 끊어 둔다.
+동작하는 MVP 까지의 **구현 우선순위/순서는 [`ROADMAP.md`](./ROADMAP.md) 가 SSOT** 다
+(중복 방지 — 이 문서는 설계, ROADMAP 은 순서). 각 단계는 독립 테스트 가능하도록
+trait 경계에서 끊는다.

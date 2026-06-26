@@ -1,7 +1,10 @@
 //! 설정 로딩.
 //!
-//! 탐색/병합 순서(뒤가 앞을 덮어씀):
-//!   내장 기본값 → `~/.config/scv/config.toml` → `./.scv/config.toml` → 환경변수(SCV_*) → CLI
+//! **현재 구현**: `~/.config/scv/config.toml` 한 곳을 읽어 파싱한다(`Config::load`).
+//! 다단계 병합은 아직 없다 — 단일 파일이 전부다.
+//! **계획(`docs/ROADMAP.md` 4d)**: 뒤가 앞을 덮는 다단계 병합 —
+//!   내장 기본값 → `~/.config/scv/config.toml` → `./.scv/config.toml`(프로젝트)
+//!   → 환경변수(SCV_*) → CLI 플래그.
 //!
 //! 비밀(API 키)은 설정 파일에 두지 않는다. 설정에는 "키를 읽어올 환경변수 이름"
 //! (`api_key_env`)만 두고, 실제 값은 런타임에 환경에서 읽는다.
