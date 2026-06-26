@@ -13,9 +13,9 @@ mod glob;
 mod grep;
 mod path;
 mod read;
+mod transcript_search;
+mod web_fetch;
 mod write;
-// TODO(계획): mod web_fetch;       // HTTP GET. egress → 권한 Ask/도메인 allowlist, parallel_safe.
-//             mod transcript_search; // 세션 JSONL·파일 정확 일치 검색(정밀 추출). reqwest 의존 추가.
 
 use std::sync::Arc;
 
@@ -27,9 +27,14 @@ pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
+pub use transcript_search::TranscriptSearchTool;
+pub use web_fetch::WebFetchTool;
 pub use write::WriteTool;
 
 /// 내장 도구를 모두 등록한 레지스트리를 만든다.
+///
+/// `transcript_search` 는 세션 디렉터리 경로 주입이 필요해 여기 넣지 않는다 — 합성 루트
+/// (scv-cli)가 [`TranscriptSearchTool::new`] 로 만들어 별도 등록한다.
 pub fn default_registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     // 읽기 전용(Allow + parallel_safe).
@@ -40,9 +45,8 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(Arc::new(WriteTool));
     reg.register(Arc::new(EditTool));
     reg.register(Arc::new(BashTool));
-    // 계획 도구:
-    // reg.register(Arc::new(WebFetchTool));        // HTTP GET (egress 권한 게이팅)
-    // reg.register(Arc::new(TranscriptSearchTool)); // 세션/파일 정밀 추출
+    // 네트워크 egress(Ask) — 부작용이 외부 호출뿐이라 parallel_safe.
+    reg.register(Arc::new(WebFetchTool::new()));
     reg
 }
 

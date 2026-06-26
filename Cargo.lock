@@ -1500,6 +1500,7 @@ dependencies = [
  "globset",
  "ignore",
  "regex",
+ "reqwest",
  "scv-core",
  "serde",
  "serde_json",

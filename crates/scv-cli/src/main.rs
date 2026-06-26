@@ -83,7 +83,13 @@ async fn main() -> anyhow::Result<()> {
     let tools = if cli.no_tools {
         scv_core::tool::ToolRegistry::new()
     } else {
-        scv_tools::default_registry()
+        // transcript_search 는 세션 디렉터리 경로 주입이 필요해 합성 루트에서 등록한다
+        // (과거 세션 JSONL 정밀 검색 — compaction 손실 보완).
+        let mut reg = scv_tools::default_registry();
+        reg.register(std::sync::Arc::new(scv_tools::TranscriptSearchTool::new(
+            expand_tilde(&config.session.dir),
+        )));
+        reg
     };
     let skills = scv_skills::load_dirs(&config.skills.dirs).unwrap_or_default();
     // 설정 기반 정적 권한 정책. TUI 모드에서는 App 이 이 게이트를 대화형 프롬프트와 합성한다

@@ -272,12 +272,12 @@ OpenAI — 구조가 달라 어댑터가 재배치:
 - `Tool` trait: `name / description / input_schema / permission / parallel_safe / invoke`.
 - `ToolRegistry` 가 이름→도구를 관리하고, 프로바이더에 보낼 스키마 목록을 모은다
   (정렬된 `BTreeMap` → 순서 결정적 → 캐시 친화적).
-- **도구 로스터**:
+- **도구 로스터**(모두 구현):
   - 내장(client-side 실행): `read` · `write` · `edit` · `bash` · `glob` · `grep`.
-  - 계획: `web_fetch`(HTTP GET — 네트워크 egress 라 권한 `Ask` 또는 도메인 allowlist,
-    `parallel_safe`), `transcript-search`(세션 JSONL·파일에서 정확 일치 검색 → 손실적
-    요약에 의존하지 않는 **정밀 추출** 경로). 둘 다 `Tool` 구현 + 레지스트리 등록만으로
-    추가되며 core/루프 변경이 없다.
+  - `web_fetch`(HTTP(S) GET — 네트워크 egress 라 권한 `Ask`, `parallel_safe`, 본문 절단),
+    `transcript_search`(세션 JSONL 에서 정확 일치 검색 → 손실적 요약에 의존하지 않는 **정밀
+    추출** 경로, `Allow`+`parallel_safe`). 둘 다 `Tool` 구현 + 레지스트리 등록만으로 추가됐고
+    core/루프 변경이 없었다(추상이 새지 않음을 실증).
 - **권한 모델**(되돌리기 어려움 기준으로 게이팅):
   - 읽기 전용·부작용 없음(`read`/`glob`/`grep`) → `Allow` + `parallel_safe=true`
   - 파일 수정·`bash` 등 비가역 → `Ask`(매번 사용자 확인)
