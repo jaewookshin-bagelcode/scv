@@ -35,7 +35,8 @@ eventsource-stream = "0.2" # SSE(text/event-stream) 파서
 # --- CLI / TUI ---
 clap = { version = "4", features = ["derive", "env"] }
 ratatui = "0.29"
-crossterm = "0.28"
+# event-stream: crossterm 입력을 async Stream 으로 받아 TUI 3-소스 select! 에 합류시킨다(§4.5).
+crossterm = { version = "0.28", features = ["event-stream"] }
 
 # --- 관측성 / 로깅 ---
 tracing = "0.1"

@@ -41,6 +41,8 @@ pub struct Config {
     #[serde(default)]
     pub permissions: PermissionsConfig,
     #[serde(default)]
+    pub ui: UiConfig,
+    #[serde(default)]
     pub providers: Vec<ProviderConfig>,
 }
 
@@ -90,13 +92,32 @@ pub struct PermissionsConfig {
     pub tools: std::collections::BTreeMap<String, String>,
 }
 
+/// UI / 진행 표시(TUI) 설정.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UiConfig {
+    /// 스피너 글리프 선택: `auto`(터미널 유니코드 감지) | `unicode`(Braille) | `ascii`(`|/-\`).
+    /// 색 출력은 `NO_COLOR` 환경변수를 존중한다(별도 키 없음). 해석은 `scv-tui`.
+    pub spinner: String,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            spinner: "auto".into(),
+        }
+    }
+}
+
 /// 프로바이더 정의. `kind` 로 어떤 어댑터를 만들지 결정한다.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
     pub id: String,
-    pub kind: String, // "anthropic" | "openai"
+    pub kind: String, // "anthropic" | "openai" | "openai-compat" | "ollama"
     pub model: String,
-    pub api_key_env: String,
+    /// 키를 읽어올 환경변수 이름. **생략하면 무인증**(로컬 Ollama 등 키가 필요 없는
+    /// 백엔드) — 이때 어댑터는 Authorization 헤더를 보내지 않는다(ROADMAP 4e).
+    #[serde(default)]
+    pub api_key_env: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
@@ -157,6 +178,34 @@ api_key_env = "OPENAI_API_KEY"
         // 생략된 섹션은 기본값으로 채워진다(serde default).
         assert_eq!(cfg.agent.max_tokens, 16000);
         assert_eq!(cfg.session.compact_threshold_tokens, 150_000);
+        // [ui] 생략 시 spinner 기본값 "auto".
+        assert_eq!(cfg.ui.spinner, "auto");
+    }
+
+    #[test]
+    fn provider_without_api_key_env_is_keyless() {
+        // api_key_env 생략 → None(무인증, 로컬 Ollama 등).
+        let toml_str = r#"
+default_provider = "ollama"
+[[providers]]
+id = "ollama"
+kind = "ollama"
+model = "qwen3.5:9b"
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse");
+        let p = cfg.default_provider().expect("provider");
+        assert!(p.api_key_env.is_none());
+    }
+
+    #[test]
+    fn parses_ui_spinner_override() {
+        let toml_str = r#"
+default_provider = "ollama"
+[ui]
+spinner = "ascii"
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse");
+        assert_eq!(cfg.ui.spinner, "ascii");
     }
 
     #[test]

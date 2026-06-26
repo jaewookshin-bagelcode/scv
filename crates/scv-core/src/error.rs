@@ -49,4 +49,13 @@ pub enum Error {
     /// 직렬화/역직렬화 오류.
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    /// 입출력 오류(터미널 raw mode·렌더 등 라이브러리 경계의 IO). `context` 로 어디서
+    /// 났는지 짚는다 — TUI 런타임(`scv-tui`)이 crossterm/ratatui IO 를 이 변형으로 감싼다.
+    #[error("{context}: {source}")]
+    Io {
+        context: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
