@@ -9,7 +9,7 @@
 Rust + Tokio. 시스템 프롬프트 · 세션 · 도구 · 스킬을 1급 기능으로 제공한다.
 
 - **기본 LLM 프로바이더: 로컬(Ollama, 모델 `qwen3.5:9b`)** — 무료·오프라인.
-  OpenAI(ChatGPT 5.5 `gpt-5.5`) · Anthropic 은 `--provider openai|anthropic` 으로 전환하는 클라우드 대체.
+  OpenAI(`gpt-5.5`) · Anthropic 은 `--provider openai|anthropic` 으로 전환하는 클라우드 대체.
 - 인터페이스: 인터랙티브 CLI/TUI(+ 원샷 모드).
 
 ## 워크스페이스 지도

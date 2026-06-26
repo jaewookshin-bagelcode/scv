@@ -182,12 +182,14 @@
 기본 `localhost:11434/v1`). 호환 변형(`openai-compat`/`ollama`)은 추론 전용 파라미터
 (`reasoning_effort`)·`stream_options` 를 보내지 않는다(로컬/게이트웨이가 400 을 내므로).
 
-- 인증 `Authorization: Bearer {api_key}`, 엔드포인트 `/chat/completions`. (Ollama 는 키를
-  무시하지만 헤더는 그대로 — `OLLAMA_API_KEY` 에 아무 값이나 둔다.)
+- 인증 `Authorization: Bearer {api_key}`, 엔드포인트 `/chat/completions`. **키가 비어 있으면
+  Authorization 헤더를 생략**한다 — 로컬 Ollama 는 키가 필요 없으므로 설정에서 `api_key_env`
+  를 생략하면 무인증으로 동작한다(ROADMAP 4e).
 - SSE delta(`choices[].delta`)와 `tool_calls` 를 코어의 `StreamEvent`/`ContentBlock`
   로 매핑한다. content 는 문자열, tool_calls 는 별도 배열 구조라는 차이를 흡수한다.
-- 사고/추론 깊이는 **OpenAI 자체 파라미터**(reasoning effort 등)를 쓴다(호환 변형은 생략).
-  Anthropic 의 `thinking` 파라미터를 보내지 않는다.
+- 추론 깊이는 OpenAI `reasoning_effort`(low|medium|high|xhigh)로 보낸다(호환 변형은 생략).
+  단 **OpenAI 정식 API 는 raw reasoning token 을 응답으로 노출하지 않는다** — `reasoning`/
+  `reasoning_content` 수신은 호환 백엔드(Ollama 등) 대응용이다. Anthropic 의 `thinking` 미전송.
 
 ### Anthropic 어댑터 (대체)
 

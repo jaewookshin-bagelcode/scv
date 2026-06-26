@@ -68,7 +68,7 @@ export SCV_LOG=info          # (선택) trace|debug|info|warn|error
 ```bash
 cp .env.example .env                  # .env 를 열어 키를 채운다(커밋되지 않음)
 # 또는 직접:
-export OPENAI_API_KEY="sk-..."        # --provider openai (ChatGPT 5.5)
+export OPENAI_API_KEY="sk-..."        # --provider openai (GPT-5.5)
 export ANTHROPIC_API_KEY="sk-ant-..." # --provider anthropic
 ```
 
@@ -154,14 +154,15 @@ cargo run --bin scv -- "이 repo 구조를 한 문단으로 설명해줘"
 cargo run --bin scv -- --model llama3.1 "안녕, 한 줄로 자기소개 해줘"
 ```
 
-**클라우드(OpenAI).** `--provider openai` 로 전환한다. **설정의 예시 모델 `gpt-5.5` 는
-플레이스홀더**이므로 실재 모델을 `--model` 로 지정한다:
+**클라우드(OpenAI).** `--provider openai` 로 전환한다. 기본 모델 `gpt-5.5` 는 현재 공식 최신
+모델이라 그대로 써도 되고, 다른 모델은 `--model` 로 지정한다:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
 
-# reasoning(추론) 계열 모델: effort 가 reasoning_effort 로 매핑된다.
-cargo run --bin scv -- --provider openai --model o4-mini "이 repo 구조를 한 문단으로 설명해줘"
+# 기본(현재 최신): effort 가 reasoning_effort 로 매핑된다(low|medium|high|xhigh).
+cargo run --bin scv -- --provider openai --model gpt-5.5 "이 repo 구조를 한 문단으로 설명해줘"
+# 저비용: --model gpt-5.4-mini
 
 # 비-reasoning 모델(gpt-4o 등)은 reasoning_effort 를 거부(400)하므로 --effort none 으로 끈다:
 cargo run --bin scv -- --provider openai --model gpt-4o --effort none "안녕, 한 줄로 자기소개 해줘"
@@ -200,9 +201,10 @@ cargo build --release        # → target/release/scv
 
 # 대상 프로젝트로 가서 실행(여기서 cwd = 그 프로젝트)
 cd /path/to/your/project
-scv --model o4-mini "이 코드베이스 구조를 설명해줘"
+scv "이 코드베이스 구조를 설명해줘"                       # 기본 = 로컬 ollama(qwen3.5:9b)
+# 클라우드로: scv --provider openai --model gpt-5.5 "..."
 # 설치 안 했으면 절대경로로:
-/path/to/scv-repo/target/release/scv --model o4-mini "..."
+/path/to/scv-repo/target/release/scv "..."
 ```
 
 > 실행 중 **Ctrl-C** 는 진행 중인 턴을 중단한다(앱은 유지). 대기(idle) 상태에서 두 번

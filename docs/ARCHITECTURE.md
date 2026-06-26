@@ -103,6 +103,11 @@ Completions). 핵심 전략:
    포맷을 **양방향 변환**한다.
 3. 코어/루프/세션/TUI 는 오직 중립 모델만 본다.
 
+> **설계 debt(향후):** OpenAI 어댑터는 현재 **Chat Completions** 기반이다. OpenAI 최신 모델
+> 가이드는 GPT-5.5 의 reasoning/tool/멀티턴에 **Responses API** 를 권장한다 — GPT-5.5 최적
+> 경로는 향후 별도 Responses API 어댑터로 두고, 지금의 Chat Completions 어댑터는 호환 경로로
+> 유지한다. (중립 모델 덕분에 어댑터 교체는 코어/루프 변경 없이 가능.)
+
 ```mermaid
 flowchart BT
     subgraph core["scv-core — 중립 모델 + Provider trait"]
@@ -116,7 +121,7 @@ flowchart BT
 
 > **기본 프로바이더는 로컬 Ollama(모델 `qwen3.5:9b`)** 다 — OpenAI-호환 어댑터를 재사용하며
 > (`kind="ollama"`, `base_url` 자동 `localhost:11434/v1`, 추론 파라미터 미전송) 오프라인으로 돈다.
-> OpenAI(ChatGPT 5.5 `gpt-5.5`)·Anthropic 은 `--provider openai|anthropic` 으로 전환해 쓰는
+> OpenAI(`gpt-5.5`)·Anthropic 은 `--provider openai|anthropic` 으로 전환해 쓰는
 > 클라우드 대체 프로바이더다.
 >
 > 두 프로바이더 모두 공식 Rust SDK 가 없어 `reqwest` + `eventsource-stream` 으로

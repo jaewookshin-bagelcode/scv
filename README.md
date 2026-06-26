@@ -201,10 +201,10 @@ EOF
 ## 프로바이더 전환(클라우드)
 
 ```bash
-# OpenAI (reasoning 모델은 effort 가 reasoning_effort 로 매핑됨)
+# OpenAI (effort 가 reasoning_effort 로 매핑: low|medium|high|xhigh)
 export OPENAI_API_KEY=sk-...
-scv --provider openai --model o4-mini "이 코드베이스 설명해줘"
-# 비-reasoning 모델(gpt-4o 등)은 --effort none
+scv --provider openai --model gpt-5.5 "이 코드베이스 설명해줘"
+# 저비용 예시: --model gpt-5.4-mini. 비-reasoning 모델(gpt-4o 등)은 --effort none
 
 # Anthropic
 export ANTHROPIC_API_KEY=sk-ant-...

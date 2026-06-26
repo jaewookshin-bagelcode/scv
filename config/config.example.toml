@@ -47,7 +47,7 @@ spinner = "auto"          # auto(유니코드 감지) | unicode | ascii(|/-\ 폴
 [[providers]]
 id = "openai"
 kind = "openai"
-model = "gpt-5.5"                  # 클라우드 대체 (ChatGPT 5.5)
+model = "gpt-5.5"                  # 클라우드 대체 (GPT-5.5, 현재 공식 최신)
 api_key_env = "OPENAI_API_KEY"     # 키를 읽어올 환경변수 이름
 base_url = "https://api.openai.com/v1"
 
