@@ -11,6 +11,10 @@
 //!   ② 도구 결과가 별도 `role:"tool"` 메시지 ③ 시스템 프롬프트가 `messages[0]`
 //!   ④ 추론 깊이는 OpenAI 자체 파라미터 `reasoning_effort`(Anthropic 의 `thinking` 미전송).
 //! - SSE delta(`choices[].delta`) → 코어 [`StreamEvent`] 매핑은 [`ChunkDecoder`].
+//!
+//! **설계 debt(향후):** 현재는 Chat Completions 어댑터다. OpenAI 최신 모델 가이드는 GPT-5.5 의
+//! reasoning/tool/멀티턴 용도에 **Responses API** 사용을 권장한다 — GPT-5.5 최적 경로는 향후
+//! 별도 Responses API 어댑터가 맡고, 이 Chat Completions 어댑터는 호환 경로로 유지한다.
 
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
@@ -193,13 +197,14 @@ fn to_wire(req: &CompletionRequest, compat: bool) -> Value {
     body
 }
 
-/// 코어 Effort → OpenAI `reasoning_effort`. OpenAI 는 low|medium|high 만 받으므로
-/// xhigh/max 는 high 로 클램프한다.
+/// 코어 Effort → OpenAI `reasoning_effort`. OpenAI 는 low|medium|high|xhigh 를 받는다.
+/// `Max` 는 OpenAI 공식 값이 아니므로 가장 높은 공식값 `xhigh` 로 클램프한다.
 fn map_effort(effort: Effort) -> &'static str {
     match effort {
         Effort::Low => "low",
         Effort::Medium => "medium",
-        Effort::High | Effort::XHigh | Effort::Max => "high",
+        Effort::High => "high",
+        Effort::XHigh | Effort::Max => "xhigh",
     }
 }
 
@@ -433,7 +438,9 @@ impl ChunkDecoder {
         }
         for choice in chunk.choices {
             let delta = choice.delta;
-            // 추론 텍스트: OpenAI 표준은 `reasoning_content`, Ollama·gemma 등은 `reasoning`.
+            // 추론 텍스트(ThinkingDelta). **OpenAI 정식 API 는 raw reasoning token 을 노출하지
+            // 않는다** — 이 필드들은 OpenAI-호환/비표준 백엔드(Ollama·로컬 모델·일부 게이트웨이)가
+            // 흘리는 reasoning 을 받기 위한 것이다(`reasoning_content` 또는 `reasoning`).
             if let Some(rc) = delta.reasoning_content.or(delta.reasoning) {
                 if !rc.is_empty() {
                     out.push(StreamEvent::ThinkingDelta(rc));
@@ -542,8 +549,9 @@ struct OpenAiChoice {
 struct OpenAiDelta {
     #[serde(default)]
     content: Option<String>,
-    /// 추론 텍스트(ThinkingDelta 로). OpenAI 표준은 `reasoning_content`,
-    /// Ollama·gemma 등 일부 백엔드는 `reasoning` 필드를 쓴다 — 둘 다 받는다.
+    /// 추론 텍스트(ThinkingDelta 로). **OpenAI 정식 API 는 raw reasoning 을 노출하지 않는다** —
+    /// OpenAI-호환/비표준 백엔드(Ollama·로컬 모델 등)가 `reasoning_content` 또는 `reasoning`
+    /// 으로 흘리는 것을 받기 위한 호환 필드(둘 다 수용).
     #[serde(default)]
     reasoning_content: Option<String>,
     #[serde(default)]
@@ -763,7 +771,8 @@ mod tests {
 
     #[test]
     fn decodes_reasoning_field_as_thinking() {
-        // Ollama·gemma 는 추론을 표준 `reasoning_content` 가 아니라 `reasoning` 으로 보낸다.
+        // 일부 OpenAI-호환 백엔드(Ollama 등)는 추론을 `reasoning_content` 가 아니라
+        // `reasoning` 으로 흘린다. (OpenAI 정식 API 는 raw reasoning 을 노출하지 않는다.)
         let mut d = ChunkDecoder::new();
         let ev = decode_data(
             &mut d,
@@ -773,11 +782,13 @@ mod tests {
     }
 
     #[test]
-    fn effort_clamps_above_high() {
+    fn effort_maps_and_clamps_max() {
         assert_eq!(map_effort(Effort::Low), "low");
         assert_eq!(map_effort(Effort::Medium), "medium");
-        assert_eq!(map_effort(Effort::XHigh), "high");
-        assert_eq!(map_effort(Effort::Max), "high");
+        assert_eq!(map_effort(Effort::High), "high");
+        // OpenAI 는 xhigh 를 지원한다. Max(비공식)는 xhigh 로 클램프.
+        assert_eq!(map_effort(Effort::XHigh), "xhigh");
+        assert_eq!(map_effort(Effort::Max), "xhigh");
     }
 
     #[test]

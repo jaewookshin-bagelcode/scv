@@ -37,8 +37,9 @@ impl Observer for StreamObserver {
                 // TTY 는 줄 단위 버퍼라 개행 전 증분이 안 보인다 → 토큰마다 flush.
                 let _ = std::io::stdout().flush();
             }
-            // 추론(thinking) 증분 — reasoning 모델(gemma·o-계열 등)은 답 전에 사고를 흘린다.
-            // 흐리게 보여준다(NO_COLOR 면 그대로).
+            // 추론(thinking) 증분 — 추론을 노출하는 백엔드(Ollama·로컬 모델, Anthropic thinking)
+            // 가 흘리는 사고. (OpenAI 정식 API 는 raw reasoning 을 노출하지 않는다.) 흐리게
+            // 보여준다(NO_COLOR 면 그대로).
             AgentEvent::Stream(StreamEvent::ThinkingDelta(t)) => {
                 if std::env::var_os("NO_COLOR").is_some() {
                     print!("{t}");
