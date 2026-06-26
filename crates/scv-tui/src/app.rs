@@ -114,6 +114,9 @@ pub struct App {
     transcript: Vec<String>,
     /// 현재 스트리밍 중인 어시스턴트 텍스트(완성되면 transcript 로 flush).
     live: String,
+    /// 현재 스트리밍 중인 사고(thinking) — 흐리게 실시간 표시, transcript 엔 보존하지 않음
+    /// (휘발성). 답 텍스트가 나오거나 메시지가 끝나면 비운다.
+    live_thinking: String,
     modal: Option<Modal>,
     /// idle 에서 Ctrl-C 한 번 누른 상태(더블 프레스로 종료).
     quit_armed: bool,
@@ -140,6 +143,7 @@ impl App {
             input: String::new(),
             transcript: Vec::new(),
             live: String::new(),
+            live_thinking: String::new(),
             modal: None,
             quit_armed: false,
             hint: String::new(),
@@ -191,6 +195,7 @@ impl App {
             agent.tool_ctx.cancel = token.clone();
             self.phase = Phase::Waiting;
             self.live.clear();
+            self.live_thinking.clear();
             self.quit_armed = false;
             self.hint = "ctrl-c to interrupt".into();
             self.render(&mut terminal)?;
@@ -367,6 +372,7 @@ impl App {
         self.phase = self.phase.next(event);
         match event {
             AgentEvent::Stream(StreamEvent::TextDelta(t)) => self.live.push_str(t),
+            AgentEvent::Stream(StreamEvent::ThinkingDelta(t)) => self.live_thinking.push_str(t),
             AgentEvent::Stream(StreamEvent::MessageStop { .. }) => self.flush_live(),
             AgentEvent::ToolStart { name } => self.transcript.push(format!("⚙ {name}")),
             AgentEvent::ToolEnd { name, is_error } if *is_error => {
@@ -376,8 +382,10 @@ impl App {
         }
     }
 
-    /// 누적된 스트리밍 텍스트를 transcript 로 옮긴다(빈 건 버림).
+    /// 누적된 스트리밍 텍스트를 transcript 로 옮긴다(빈 건 버림). 사고(thinking)는 휘발성이라
+    /// 보존하지 않고 비운다.
     fn flush_live(&mut self) {
+        self.live_thinking.clear();
         let text = std::mem::take(&mut self.live);
         let trimmed = text.trim_end();
         if !trimmed.is_empty() {
@@ -412,21 +420,33 @@ impl App {
     }
 
     fn draw_transcript(&self, f: &mut Frame<'_>, area: Rect) {
+        let block = Block::default().borders(Borders::ALL).title(" scv ");
+        let inner = block.inner(area);
+
         let mut lines: Vec<Line<'_>> = self
             .transcript
             .iter()
             .map(|l| Line::raw(l.clone()))
             .collect();
+        // 실시간 스트리밍: 답 텍스트가 시작됐으면 그걸(끝에 캐럿), 아직 사고만 흐르면 사고를
+        // 흐리게 보여준다 — 사고를 안 보여주면 긴 reasoning 동안 화면이 빈 것처럼 보인다.
         if !self.live.is_empty() {
-            lines.push(Line::raw(format!("{}▋", self.live)));
+            lines.push(Line::from(format!("{}▋", self.live)));
+        } else if !self.live_thinking.is_empty() {
+            for tl in self.live_thinking.lines() {
+                lines.push(Line::from(self.styled(
+                    tl.to_string(),
+                    Color::DarkGray,
+                    true,
+                )));
+            }
         }
-        let inner_h = area.height.saturating_sub(2) as usize; // 보더 2줄.
-        let scroll = lines.len().saturating_sub(inner_h) as u16;
-        let para = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(" scv "))
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0));
-        f.render_widget(para, area);
+
+        let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+        // 줄바꿈(wrap)까지 고려한 실제 행 수로 스크롤해 항상 마지막(최신 응답)이 보이게 한다.
+        let total = para.line_count(inner.width) as u16;
+        let scroll = total.saturating_sub(inner.height);
+        f.render_widget(para.block(block).scroll((scroll, 0)), area);
     }
 
     fn draw_status(&self, f: &mut Frame<'_>, area: Rect) {
