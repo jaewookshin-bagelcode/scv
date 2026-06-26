@@ -232,6 +232,18 @@ impl App {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
         let observer = ChannelObserver::new(event_tx);
 
+        // 시작 안내: 현재 모델 + 사용 가능한 스킬 + 도움말을 한 줄 띄운다(스킬이 있는데도
+        // /skills 를 쳐야만 보여서 "없는 것처럼" 보이던 문제 해소).
+        let skill_names: Vec<&str> = skills.summaries().map(|m| m.name.as_str()).collect();
+        let skills_note = if skill_names.is_empty() {
+            "no skills".to_string()
+        } else {
+            format!("skills: {} (run with /<name>)", skill_names.join(", "))
+        };
+        self.transcript.push(format!(
+            "scv · {} · {skills_note} · /help",
+            self.model_label
+        ));
         self.hint = "type a message · enter to send · ctrl-c to quit".into();
         self.render(&mut terminal)?;
 
