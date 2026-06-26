@@ -90,6 +90,7 @@ cp config/config.example.toml ~/.config/scv/config.toml
 - `default_provider` — 기본 프로바이더 id
 - `[agent]` — `max_tokens`, `effort`, `max_tool_iterations`
 - `[permissions]` — 도구별 자동 허용/질문/거부
+- `[ui]` — 진행 표시 스피너 스타일(`spinner`: `auto`/`unicode`/`ascii`). 색은 `NO_COLOR` 존중
 - `[[providers]]` — 프로바이더별 `kind`/`model`/`api_key_env`/`base_url`
 
 ### 3.3 스킬 추가 (선택)
@@ -132,6 +133,10 @@ cargo run --bin scv -- --resume <session-id>
 # 릴리스 바이너리 직접 실행
 ./target/release/scv "..."
 ```
+
+> 실행 중 **Ctrl-C** 는 진행 중인 턴을 중단한다(앱은 유지). 대기(idle) 상태에서 두 번
+> 누르면 종료한다. 원샷 모드에서는 Ctrl-C 가 그 호출을 중단한다. (동작 설계는
+> `docs/ARCHITECTURE.md` §4.5.)
 
 도움말:
 

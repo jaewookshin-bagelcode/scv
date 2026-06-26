@@ -32,7 +32,7 @@
 flowchart TD
     U[사용자 입력] --> C["1 컨텍스트 준비<br/>(필요 시 compaction)"]
     C --> P["2 Provider.stream<br/>system + 메시지 + 도구 스키마"]
-    P -. "스트림 이벤트<br/>(TextDelta, ToolUseStart ...)" .-> O(["Observer → TUI 실시간 출력"])
+    P -. "AgentEvent<br/>(스트림/도구/권한 통지)" .-> O(["Observer.on_event → TUI 렌더<br/>(관찰 전용)"])
     P --> A[3 assistant 메시지로 집계]
     A --> D{"stop_reason<br/>== tool_use ?"}
     D -- no --> E[턴 종료 · 세션 저장]
@@ -40,9 +40,17 @@ flowchart TD
     G --> T["5 도구 실행<br/>(병렬 가능)"]
     T --> R["tool_result 들을<br/>하나의 user 메시지로 push"]
     R -- "반복 (상한 max_tool_iterations)" --> C
+    X["취소(Ctrl-C → cancel 토큰)"] -. "협조적 중단" .-> P
+    X -.-> T
 ```
 
 구현: `scv-core::agent::Agent::run_turn`.
+
+**협조적 취소(cancellation).** 루프는 매 이터레이션 진입부·스트림 소비(`tokio::select!`)
+·도구 실행 단계에서 `ToolContext.cancel`(`tokio_util::sync::CancellationToken`)을
+확인한다. 사용자가 Ctrl-C 로 중단하면 진행 중 스트림을 멈추고 **이미 모은 부분 텍스트를
+세션에 보존**한 뒤 `Error::Cancelled` 로 턴을 끝낸다(크래시가 아니라 정상적인 중단).
+TUI 측 키 처리·진행 표시는 §4.5.
 
 이 루프의 핵심 설계 원칙은 **"엔진은 구체 타입을 모른다"** 이다. `Agent` 는
 `dyn Provider`, `dyn Tool`, `dyn PermissionGate`, `dyn ContextManager` 같은 trait
@@ -257,6 +265,8 @@ OpenAI — 구조가 달라 어댑터가 재배치:
   `write`/`bash` 같은 비가역 도구가 권한 모달 없이 무단 실행되는 일은 없다.
 - **보안**: 모든 경로 입력은 `ToolContext.workdir` 안으로 제한(경로 탈출/심볼릭
   링크 방지). bash 명령은 모델이 만든 신뢰 불가 출력으로 취급한다.
+- **취소 협조**: 장시간 실행 도구(`bash` 등)는 `ToolContext.cancel` 을 주기적으로
+  확인해 사용자 중단 시 자식 프로세스를 정리하고 빠르게 빠져나온다(§2 협조적 취소, §4.5).
 
 왜 bash 하나로 다 하지 않고 도구를 나누나? 전용 도구라야 하네스가 그 행동을
 **게이팅/렌더링/감사/병렬화**할 수 있다. bash 명령 문자열은 하네스 입장에서 불투명해
@@ -274,6 +284,53 @@ OpenAI — 구조가 달라 어댑터가 재배치:
 - → 토큰을 아끼면서 필요한 순간에만 상세 지침을 제공.
 
 `scv-skills::load_dirs` 가 디렉터리들을 훑어 `SkillRegistry` 를 채운다.
+
+### 4.5 TUI 런타임 — 이벤트 루프 · 인터럽트 · 진행 표시
+
+`scv-tui::App` 은 `Agent::run_turn`(에이전트 루프)과 ratatui 렌더/입력 루프를 **동시에**
+굴린다. 둘은 직접 호출이 아니라 **채널**로 통신한다 — `Observer`/`PermissionGate` 가
+`&self` 라 화면을 직접 못 만지기 때문이다.
+
+**채널의 방향(중요).** TUI ↔ 루프 사이에 역할이 다른 세 경로가 있고, 그중 관찰 경로만
+단방향이다:
+
+| 경로 | 방향 | 제어? | 용도 |
+|------|------|-------|------|
+| `AgentEvent`/`Observer` | 루프 → TUI (단방향) | ❌ 관찰만 | 스피너·스트리밍 렌더. `on_event` 은 `()` 반환 → 되먹임 불가 |
+| `PermissionGate::decide` | TUI → 루프 (반환값) | ✅ | 권한 모달 결과 → `Allow` 면 실행, 아니면 거부(fail-closed §4.3) |
+| `CancellationToken` | TUI → 루프 | ✅ | Ctrl-C 가 토큰 cancel → 루프가 감지해 중단 |
+
+따라서 `AgentEvent::Interrupted`/`PermissionAsked` 는 그 일을 *유발*하는 게 아니라
+**발생 사실을 알리는 사후 통지**다(TUI 렌더용). 인터럽트의 실제 메커니즘은
+`CancellationToken`, 승인은 `decide` 의 반환값이다.
+
+**3-소스 `select!` 루프.** UI 루프는 ① crossterm 입력(`EventStream`, `event-stream`
+피처 — 또는 블로킹 reader→mpsc) ② `AgentEvent` mpsc(`Observer` 가 보냄) ③ 렌더 틱
+(`interval(~80ms)`, 스피너 애니메이션용)을 동시에 기다린다.
+
+**진행 phase 상태머신.** `AgentEvent` 를 받아 화면 상태를 도출한다:
+
+```
+Idle → Waiting → Thinking(ThinkingDelta) → Responding(TextDelta)
+     → ToolPending(MessageStop{ToolUse}) → RunningTool(name)(ToolStart/ToolEnd)
+     → AwaitingPermission(PermissionAsked) → (Interrupted | Idle)
+```
+
+**스피너 / ANSI 아트.** 출력이 아직 안 보이는 phase(Waiting/Thinking/RunningTool)에서
+스피너를 돌린다 — Braille `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`(유니코드), 미지원 터미널은 `|/-\`(ascii
+폴백, `[ui].spinner` 설정). 상태줄 예: `⠹ Running bash…  (4s · ctrl-c to interrupt)`.
+색 출력은 `NO_COLOR` 를 존중한다. `Responding` 중엔 스피너 대신 스트리밍 텍스트를
+그대로 흘리고 끝에 캐럿(`▋`)만 둔다(스트림과 경쟁 금지).
+
+**Ctrl-C(인터럽트).** raw mode 에선 Ctrl-C 가 SIGINT 가 아니라 키 이벤트로 오므로 UI
+루프가 직접 처리한다 — 턴 진행 중이면 그 턴의 `CancellationToken` 을 cancel(현재 턴만
+중단, 앱은 유지), idle 이면 **더블 프레스로 종료**(1차 = "한 번 더 누르면 종료" 안내,
+2차 = 종료). 토큰은 one-shot 이라 App 이 **턴마다 새 토큰**을 만들어 그 턴의
+`ToolContext.cancel` 로 주입한다. 원샷 모드(비-TUI)는 `tokio::signal::ctrl_c()` 를
+`run_turn` 과 `select!` 한다(같은 `Error::Cancelled` 경로 공유).
+
+**터미널 복원.** raw mode 진입은 `Drop` 가드로 감싸 정상 종료·취소·**패닉** 어느
+경우에도 `disable_raw_mode` + `LeaveAlternateScreen` 으로 복원한다.
 
 ## 5. 크레이트 구조
 
@@ -308,7 +365,7 @@ flowchart TD
 | `scv-providers` | `Provider` 구현 + 와이어 변환 | core |
 | `scv-tools` | 내장 도구 + 정적 권한 정책 | core |
 | `scv-skills` | `SKILL.md` 파싱 → `SkillRegistry` | core |
-| `scv-tui` | 대화 UI, 스트림 렌더, 권한 모달 | core |
+| `scv-tui` | 대화 UI, 스트림 렌더, 권한 모달, 진행 표시(스피너) · 인터럽트(Ctrl-C) | core |
 | `scv-cli` | 부트스트랩/조립, 세션 파일 저장, CLI 파싱 | 전부 |
 
 이 배치의 이점: 새 프로바이더/도구/스킬을 추가할 때 **core 와 다른 크레이트를 건드릴
@@ -328,10 +385,17 @@ enum ContentBlock {
 
 struct Message { role: Role, content: Vec<ContentBlock> }
 
-enum StreamEvent {                          // 프로바이더 공통 정규화 이벤트
+enum StreamEvent {                          // 프로바이더 공통 정규화 이벤트(스트림 전용)
     MessageStart { model }, TextDelta(String), ThinkingDelta(String),
     ToolUseStart { id, name }, ToolUseInputDelta { id, partial_json },
     ContentBlockStop, MessageStop { stop_reason, usage },
+}
+
+enum AgentEvent {                           // 루프 → Observer 통지(관찰 전용, §4.5)
+    Stream(StreamEvent),                    // 프로바이더 스트림 증분을 감쌈
+    ToolStart { name }, ToolEnd { name, is_error },  // 도구 실행 라이프사이클
+    PermissionAsked { name },               // Ask 도구가 권한 모달 대기
+    Interrupted,                            // 사용자 인터럽트로 턴 중단(사후 통지)
 }
 ```
 
@@ -340,6 +404,9 @@ enum StreamEvent {                          // 프로바이더 공통 정규화 
 - **병렬 도구 결과는 반드시 하나의 user 메시지**에 담아 보낸다(분산 금지 — 모델이
   병렬 호출을 멈추도록 잘못 학습됨).
 - tool_use 의 `input` 은 항상 JSON 파싱으로 다룬다(직렬화 문자열 매칭 금지).
+- **`StreamEvent` 는 프로바이더 스트림 전용**(어댑터가 SSE 에서 번역). 도구 실행·권한·
+  취소 같은 **루프 라이프사이클은 `AgentEvent` 로 감싸** `Observer` 에 흘린다 — 둘 다
+  `#[non_exhaustive]`. `Observer` 계약·채널 방향은 §4.5.
 
 ## 7. 확장 포인트
 

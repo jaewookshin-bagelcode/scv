@@ -33,6 +33,11 @@ edit = "ask"
 write = "ask"
 bash = "ask"
 
+# UI / 진행 표시(TUI). Ctrl-C: 턴 중단 / idle 더블프레스 종료(docs/ARCHITECTURE.md §4.5).
+[ui]
+spinner = "auto"          # auto(유니코드 감지) | unicode | ascii(|/-\ 폴백)
+# 색 출력은 NO_COLOR 환경변수를 존중한다(별도 설정 없음).
+
 # --- 프로바이더 정의 (멀티 프로바이더) ---
 # 기본은 OpenAI(ChatGPT 5.5). Anthropic 은 --provider anthropic 로 전환해 쓸 수 있다.
 [[providers]]

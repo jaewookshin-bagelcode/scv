@@ -34,7 +34,9 @@
 | `to_wire` (요청 변환) | ⛔ `messages:[]` 빈 스텁 |
 | `Provider::count_tokens` | ⛔ `Ok(0)` 스텁 |
 | `glob`/`grep`/`bash`/`write`/`edit` 도구 | ⛔ 미구현 |
-| `scv-tui::App` 대화 루프 + 권한 모달 | ⛔ 스캐폴드 |
+| `scv-tui::App` 대화 루프 + 권한 모달 + 인터럽트 + 진행 표시 | ⛔ 스캐폴드 |
+| 취소(`CancellationToken` 실제) + 루프 취소 체크포인트 | ⛔ placeholder(`is_cancelled()==false`)만 |
+| `AgentEvent` + `Observer` 확장(도구/권한/취소 통지) | ⛔ `Observer` 가 `StreamEvent` 만 봄 |
 | `ContextManager` 전략 | ⛔ `NoopContextManager` 만 |
 | `ProjectContextLoader`(AGENTS.md 체인) | ⛔ `load()` → `None` 스텁 |
 | `web_fetch`/`transcript-search` 도구 | ⛔ 미구현 |
@@ -78,11 +80,28 @@
 - [ ] (선택) **병렬 도구 실행** — `parallel_safe` 도구를 `join_all` 로.
   `crates/scv-core/src/agent.rs:135`(현재 순차).
 
-## Phase 2 — "쓸 수 있다" (인터랙티브 + 재개)
+## Phase 2 — "쓸 수 있다" (인터랙티브 + 인터럽트 + 재개)
 
-- [ ] **2a. `scv-tui::App` 대화 루프 + 권한 모달.**
-  권한 게이트는 fail-closed 라 `Ask` 도구는 이 모달이 사용자 동의를 받아 `Allow` 를
-  돌려줘야 실행된다. 즉 `bash`/`edit` 를 인터랙티브하게 쓰려면 이 모달이 필수다.
+- [ ] **2a₀. (core 선행) 취소 + 통지 기반.** TUI 인터럽트·진행 표시가 의존하는 core 변경
+  (원샷 모드도 함께 이득). 설계는 ARCHITECTURE §2(협조적 취소)·§4.5·§6(`AgentEvent`).
+  - 실제 `tokio_util::sync::CancellationToken` 로 교체 — `crates/scv-core/src/tool.rs:147`
+    placeholder(`is_cancelled()==false`) 제거.
+  - `Agent::run_turn` 협조적 취소 체크포인트 3곳: 이터레이션 진입부(`agent.rs:87`),
+    스트림 소비를 `tokio::select!` 로(`agent.rs:106`), 도구 실행 전후(`agent.rs:132`).
+    중단 시 모은 부분 텍스트를 세션에 보존.
+  - `Error::Cancelled` 추가 — `crates/scv-core/src/error.rs`(`#[non_exhaustive]`).
+  - `AgentEvent` enum + `Observer::on_event(&AgentEvent)` 확장(`scv-core::message`/`agent`).
+    루프가 도구/권한/취소 시점에 emit. `NullObserver`·`scv-tui::StreamObserver` 갱신.
+  - 원샷 모드: `tokio::signal::ctrl_c()` 를 `run_turn` 과 `select!`(같은 토큰·`Error::Cancelled`).
+- [ ] **2a. `scv-tui::App` 대화 루프 + 권한 모달 + 인터럽트 + 진행 표시.**
+  - 3-소스 `select!` 루프(crossterm 입력 / `AgentEvent` mpsc / 렌더 틱) — ARCHITECTURE §4.5.
+  - 권한 모달: fail-closed 라 `Ask` 도구는 모달이 동의를 받아 `Allow` 를 돌려줘야 실행
+    (`bash`/`edit` 인터랙티브 사용의 필수 조건).
+  - 진행 phase 상태머신 + 스피너(Braille / ascii 폴백 `[ui].spinner`, `NO_COLOR` 존중).
+  - Ctrl-C: 턴 진행 중 = 현재 턴 중단(턴별 새 토큰) / idle = 더블 프레스로 종료.
+    터미널 복원은 `Drop` 가드(패닉 포함).
+  - `main.rs` 배선: 턴별 `CancellationToken` 주입 + 대화형 `PermissionGate` 주입
+    (현재 `crates/scv-cli/src/main.rs:69` 는 `StaticPermissionGate(Ask)` 라 모달이 없으면 전부 거부).
 - [ ] **2b. `FileSessionStore` 루프 연결 + `--resume`.**
   `crates/scv-cli/src/main.rs:113` TODO 해소.
 
@@ -113,6 +132,6 @@
 |------|------------------------|
 | Phase 0 | 모델과 한 턴 대화(스트리밍 출력) |
 | Phase 1 | 자율적으로 도구 호출해 파일 읽고 고침 |
-| Phase 2 | 인터랙티브 TUI + 권한 확인 + 세션 재개 |
+| Phase 2 | 인터랙티브 TUI + 권한 확인 + 인터럽트(Ctrl-C)·진행 표시 + 세션 재개 |
 | Phase 3 | 긴 대화에서 컨텍스트 자동 관리 |
 | Phase 4 | 프로바이더 2개 + 프로젝트 컨텍스트 + 격리 |

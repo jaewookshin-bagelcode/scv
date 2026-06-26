@@ -55,8 +55,10 @@
 - **async 함수 안에서 블로킹 호출 금지**: `std::fs`, `std::thread::sleep`, 무거운
   CPU 작업 등은 `tokio::fs` / `tokio::time::sleep` / `spawn_blocking` 으로.
   (도구 구현은 파일 IO 가 많다 → `tokio::fs` 필수.)
-- 취소(cancellation)는 `CancellationToken` 으로 협조적으로 처리한다. 긴 도구는
-  주기적으로 `ctx.cancel.is_cancelled()` 를 확인한다.
+- 취소(cancellation)는 `tokio_util::sync::CancellationToken` 으로 협조적으로 처리한다.
+  긴 도구는 주기적으로 `ctx.cancel.is_cancelled()` 를 확인하고, 스트리밍 등 await 루프는
+  `tokio::select!` 로 `cancel.cancelled()` 와 경쟁시킨다. 취소는 패닉/일반 에러가 아니라
+  `Error::Cancelled` 로 표현하고 부분 결과를 보존한다(ARCHITECTURE §2·§4.5).
 - 공유 상태는 `Arc<T>`(불변) 또는 `Arc<Mutex<T>>`/`Arc<RwLock<T>>`(가변). 락은
   await 지점을 넘겨 들고 있지 않는다.
 
@@ -69,7 +71,7 @@
 - 빌더가 자연스러운 곳엔 빌더 패턴(`SystemPromptBuilder`). 소비형 빌더는
   `self` 를 받아 `Self` 를 반환한다.
 - 공개 enum 중 향후 변형이 늘 수 있는 것은 `#[non_exhaustive]`(예: `StreamEvent`,
-  `Error`).
+  `AgentEvent`, `Error`).
 - 외부 입력을 받는 함수는 `impl Into<String>` / `AsRef<Path>` 등으로 호출부를 편하게.
 - 불필요한 `clone()` 을 피한다. 빌릴 수 있으면 빌린다. 단, 가독성을 해치는
   수명(lifetime) 곡예보다는 명시적 `clone` 이 낫다(특히 trait object 경계).
@@ -135,6 +137,9 @@
   `warn!`, `debug!`, `error!`)를 쓴다.
 - 예외: `scv-cli`/`scv-tui` 의 **사용자 대상 출력**은 stdout(print) 가 맞다.
   진단/디버그 로그는 stderr(tracing)로 분리한다.
+- TUI(raw mode)에서는 진행 표시·렌더가 ratatui(대체 화면)로만 나가야 한다. 애니메이션
+  redraw 중 `print!`/`tracing` 이 stdout 을 오염시키면 화면이 깨진다 — 진단 로그는
+  stderr(tracing)에 유지한다.
 - 구조화 필드를 활용: `warn!(path = %p.display(), error = %e, "skill load failed")`.
 - 민감정보(키/토큰/사용자 데이터)를 로그에 남기지 않는다.
 
