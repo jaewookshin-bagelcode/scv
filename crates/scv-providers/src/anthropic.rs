@@ -1,32 +1,44 @@
 //! Anthropic Messages API 어댑터.
 //!
 //! 공식 Rust SDK 가 없으므로 `reqwest` 로 `POST /v1/messages` 를 직접 호출하고,
-//! `eventsource-stream` 으로 SSE 응답을 파싱한다.
+//! `eventsource-stream` 으로 SSE 응답을 파싱한다. OpenAI 어댑터처럼 변환은 **순수
+//! 함수**([`to_wire`], [`AnthropicDecoder`])로 두고 HTTP/SSE 부작용만 [`AnthropicProvider::stream`]
+//! 에 둔다(functional core / imperative shell, CODING_RULES §4.1).
 //!
 //! 와이어 사양(요지):
-//! - 엔드포인트: `POST {base_url}/v1/messages`
+//! - 엔드포인트: `POST {base_url}/v1/messages`, 토큰 카운트는 `/v1/messages/count_tokens`
 //! - 헤더: `x-api-key`, `anthropic-version: 2023-06-01`, `content-type: application/json`
 //! - 본문(요청): `{ model, max_tokens, system, messages, tools, stream: true,
 //!     thinking: {type:"adaptive"}, output_config: {effort} }`
-//! - 사고/효과: 4.6+ 모델은 `thinking: {type:"adaptive"}` + `output_config.effort`
-//!   (`budget_tokens` 는 4.7/4.8 에서 400). 이 어댑터의 기본 모델은 `claude-opus-4-8`
-//!   (프로젝트 전체 기본 프로바이더는 OpenAI/ChatGPT 5.5 — 설정의 default_provider 참고).
+//! - 와이어 차이(어댑터가 흡수): ① `system` 이 **최상위 필드**(OpenAI 는 messages[0])
+//!   ② 도구 입력이 **객체** `input`(OpenAI 는 문자열 arguments) ③ tool_result 가 user
+//!   메시지의 content 블록 ④ 추론은 `thinking`(OpenAI 는 reasoning_effort).
 //! - 스트림 이벤트 → 코어 이벤트 매핑:
 //!
 //!   ```text
+//!   message_start                         → MessageStart (+ input_tokens 적립)
+//!   content_block_start(tool_use)         → ToolUseStart
 //!   content_block_delta(text_delta)       → TextDelta
 //!   content_block_delta(thinking_delta)   → ThinkingDelta
-//!   content_block_start(tool_use)         → ToolUseStart
 //!   content_block_delta(input_json_delta) → ToolUseInputDelta
 //!   content_block_stop                    → ContentBlockStop
-//!   message_delta(stop_reason,usage) / message_stop → MessageStop
+//!   message_delta(stop_reason,usage)      → (stop_reason·output_tokens 적립)
+//!   message_stop                          → MessageStop
 //!   ```
 
-use async_trait::async_trait;
+use std::collections::{HashMap, VecDeque};
+use std::pin::Pin;
 
-use scv_core::message::{Message, StreamEvent};
-use scv_core::provider::{CompletionRequest, EventStream, ModelInfo, Provider, ToolSchema};
-use scv_core::Result;
+use async_trait::async_trait;
+use eventsource_stream::{Event as SseEvent, Eventsource};
+use futures::{Stream, StreamExt};
+use serde_json::{json, Value};
+
+use scv_core::message::{ContentBlock, Message, Role, StopReason, StreamEvent, Usage};
+use scv_core::provider::{
+    CompletionRequest, Effort, EventStream, ModelInfo, Provider, ThinkingMode, ToolSchema,
+};
+use scv_core::{Error, Result};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -55,27 +67,6 @@ impl AnthropicProvider {
             }],
         }
     }
-
-    /// 코어 요청을 Anthropic 와이어 JSON 으로 변환한다.
-    fn to_wire(&self, req: &CompletionRequest) -> serde_json::Value {
-        let mut body = serde_json::json!({
-            "model": req.model,
-            "max_tokens": req.max_tokens,
-            "stream": true,
-            "thinking": { "type": "adaptive" },
-            // messages/tools/system 변환은 별도 함수에서 채운다(블록 ↔ Anthropic content).
-            "messages": [],
-        });
-        if let Some(system) = &req.system {
-            body["system"] = serde_json::json!(system);
-        }
-        if let Some(effort) = req.effort {
-            body["output_config"] =
-                serde_json::json!({ "effort": format!("{effort:?}").to_lowercase() });
-        }
-        // TODO: req.messages → Anthropic content 블록, req.tools → tools[] 변환.
-        body
-    }
 }
 
 #[async_trait]
@@ -89,38 +80,491 @@ impl Provider for AnthropicProvider {
     }
 
     async fn stream(&self, request: CompletionRequest) -> Result<EventStream> {
-        let _wire = self.to_wire(&request);
-        let _ = (
-            &self.api_key,
-            &self.base_url,
-            &self.http,
-            &self.model,
-            ANTHROPIC_VERSION,
-        );
+        let wire = to_wire(&request, true);
+        let resp = self
+            .http
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .json(&wire)
+            .send()
+            .await
+            .map_err(|e| Error::Provider(format!("request failed: {e}")))?;
 
-        // 실제 구현 골격:
-        //   let resp = self.http.post(format!("{}/v1/messages", self.base_url))
-        //       .header("x-api-key", &self.api_key)
-        //       .header("anthropic-version", ANTHROPIC_VERSION)
-        //       .json(&wire).send().await?;
-        //   let sse = resp.bytes_stream().eventsource();
-        //   let mapped = sse.map(|ev| parse_anthropic_event(ev));  // → StreamEvent
-        //   Ok(Box::pin(mapped))
-        //
-        // 스캐폴드 단계에서는 빈 스트림을 돌려준다.
-        let empty = futures::stream::empty::<Result<StreamEvent>>();
-        Ok(Box::pin(empty))
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::Provider(format!("Anthropic HTTP {status}: {body}")));
+        }
+
+        let sse: SseStream = Box::pin(resp.bytes_stream().eventsource());
+        let stream = futures::stream::unfold(StreamState::new(sse), drive_stream);
+        Ok(Box::pin(stream))
     }
 
     async fn count_tokens(
         &self,
-        _system: Option<&str>,
-        _messages: &[Message],
-        _tools: &[ToolSchema],
+        system: Option<&str>,
+        messages: &[Message],
+        tools: &[ToolSchema],
     ) -> Result<u64> {
-        // TODO: POST {base_url}/v1/messages/count_tokens
-        //   헤더: x-api-key, anthropic-version → 응답의 input_tokens 반환.
-        //   평상시 compaction 신호로는 returned usage(MessageStop)를 우선 사용한다.
-        Ok(0)
+        // Anthropic 은 정확한 토큰 수를 서버에서 계산해 준다(POST /v1/messages/count_tokens).
+        let mut body = json!({
+            "model": self.model,
+            "messages": messages_to_wire(messages),
+        });
+        if let Some(sys) = system {
+            body["system"] = json!(sys);
+        }
+        if !tools.is_empty() {
+            body["tools"] = tools_to_wire(tools);
+        }
+        let resp = self
+            .http
+            .post(format!("{}/v1/messages/count_tokens", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Provider(format!("count_tokens request failed: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::Provider(format!(
+                "Anthropic count_tokens HTTP {status}: {body}"
+            )));
+        }
+        let parsed: Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::Provider(format!("count_tokens parse: {e}")))?;
+        Ok(parsed["input_tokens"].as_u64().unwrap_or(0))
+    }
+}
+
+// ───────────────────────── 요청: 코어 → Anthropic 와이어 ─────────────────────────
+
+/// 코어 [`CompletionRequest`] 를 Anthropic Messages 요청 본문으로 변환한다 — **순수**.
+/// `stream` 이면 `stream:true` 를 넣는다(count_tokens 경로는 false).
+fn to_wire(req: &CompletionRequest, stream: bool) -> Value {
+    let mut body = json!({
+        "model": req.model,
+        "max_tokens": req.max_tokens,
+        "messages": messages_to_wire(&req.messages),
+    });
+    if stream {
+        body["stream"] = json!(true);
+    }
+    if let Some(system) = &req.system {
+        body["system"] = json!(system);
+    }
+    if !req.tools.is_empty() {
+        body["tools"] = tools_to_wire(&req.tools);
+    }
+    // 추론: 4.6+ 는 thinking:{type:"adaptive"} + output_config.effort(budget_tokens 미사용).
+    if req.thinking != ThinkingMode::Disabled {
+        body["thinking"] = json!({ "type": "adaptive" });
+        if let Some(effort) = req.effort {
+            body["output_config"] = json!({ "effort": map_effort(effort) });
+        }
+    }
+    body
+}
+
+/// 코어 Effort → Anthropic `output_config.effort`(low|medium|high). xhigh/max 는 high 로 클램프.
+fn map_effort(effort: Effort) -> &'static str {
+    match effort {
+        Effort::Low => "low",
+        Effort::Medium => "medium",
+        Effort::High | Effort::XHigh | Effort::Max => "high",
+    }
+}
+
+/// 코어 메시지 → Anthropic `messages[]`(role + content 블록 배열). system 은 최상위라 제외.
+fn messages_to_wire(messages: &[Message]) -> Value {
+    Value::Array(
+        messages
+            .iter()
+            .filter_map(|m| {
+                let role = match m.role {
+                    Role::Assistant => "assistant",
+                    // System 역할 메시지는 보통 최상위 system 으로 가지만, 들어오면 user 로.
+                    Role::User | Role::System => "user",
+                };
+                let content: Vec<Value> = m.content.iter().filter_map(block_to_wire).collect();
+                if content.is_empty() {
+                    return None;
+                }
+                Some(json!({ "role": role, "content": content }))
+            })
+            .collect(),
+    )
+}
+
+/// 코어 콘텐츠 블록 → Anthropic content 블록. `Thinking` 은 서명 검증 이슈를 피하려고
+/// 아웃바운드에서 생략한다(되돌려보낼 때 유효 signature 가 없으면 400 가능).
+fn block_to_wire(block: &ContentBlock) -> Option<Value> {
+    match block {
+        ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
+        ContentBlock::ToolUse { id, name, input } => Some(json!({
+            "type": "tool_use", "id": id, "name": name, "input": input,
+        })),
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => Some(json!({
+            "type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error,
+        })),
+        ContentBlock::Thinking { .. } => None,
+    }
+}
+
+/// 코어 [`ToolSchema`] → Anthropic tool 정의(이름/설명/input_schema 그대로).
+fn tools_to_wire(tools: &[ToolSchema]) -> Value {
+    Value::Array(
+        tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                })
+            })
+            .collect(),
+    )
+}
+
+// ───────────────────────── 응답: Anthropic SSE → 코어 StreamEvent ─────────────────────────
+
+type SseStream = Pin<
+    Box<
+        dyn Stream<
+                Item = std::result::Result<
+                    SseEvent,
+                    eventsource_stream::EventStreamError<reqwest::Error>,
+                >,
+            > + Send,
+    >,
+>;
+
+struct StreamState {
+    sse: SseStream,
+    decoder: AnthropicDecoder,
+    pending: VecDeque<StreamEvent>,
+    done: bool,
+    stop_sent: bool,
+    errored: bool,
+}
+
+impl StreamState {
+    fn new(sse: SseStream) -> Self {
+        Self {
+            sse,
+            decoder: AnthropicDecoder::new(),
+            pending: VecDeque::new(),
+            done: false,
+            stop_sent: false,
+            errored: false,
+        }
+    }
+}
+
+/// `futures::stream::unfold` 한 스텝. Anthropic 은 `message_stop` 이벤트로 끝나므로 그때
+/// `MessageStop` 을 낸다. 만약 그 이벤트 없이 스트림이 닫히면(이상 종료) 마지막에 한 번 합성.
+async fn drive_stream(mut st: StreamState) -> Option<(Result<StreamEvent>, StreamState)> {
+    loop {
+        if let Some(ev) = st.pending.pop_front() {
+            if matches!(ev, StreamEvent::MessageStop { .. }) {
+                st.stop_sent = true;
+            }
+            return Some((Ok(ev), st));
+        }
+        if st.done {
+            if !st.stop_sent && !st.errored {
+                st.stop_sent = true;
+                return Some((Ok(st.decoder.message_stop()), st));
+            }
+            return None;
+        }
+        match st.sse.next().await {
+            None => st.done = true,
+            Some(Err(e)) => {
+                st.done = true;
+                st.errored = true;
+                return Some((Err(Error::Provider(format!("stream error: {e}"))), st));
+            }
+            Some(Ok(event)) => {
+                if !event.data.trim().is_empty() {
+                    match serde_json::from_str::<Value>(&event.data) {
+                        Ok(value) => st.pending.extend(st.decoder.decode(&value)),
+                        Err(e) => {
+                            st.done = true;
+                            st.errored = true;
+                            return Some((
+                                Err(Error::Provider(format!("malformed SSE event: {e}"))),
+                                st,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Anthropic SSE 이벤트(JSON)를 코어 [`StreamEvent`] 로 누적 변환하는 디코더.
+///
+/// 상태가 필요한 이유: ① tool_use 의 `id`/`name` 은 `content_block_start` 에만 있고
+/// 이후 `input_json_delta` 엔 `index` 만 오므로 index→id 매핑을 든다 ② `stop_reason`·
+/// `usage` 는 `message_start`/`message_delta` 에 나눠 와서 마지막 `MessageStop` 에 합친다.
+struct AnthropicDecoder {
+    tool_ids: HashMap<u64, String>,
+    stop: StopReason,
+    usage: Usage,
+}
+
+impl AnthropicDecoder {
+    fn new() -> Self {
+        Self {
+            tool_ids: HashMap::new(),
+            stop: StopReason::EndTurn,
+            usage: Usage::default(),
+        }
+    }
+
+    fn message_stop(&self) -> StreamEvent {
+        StreamEvent::MessageStop {
+            stop_reason: self.stop,
+            usage: self.usage,
+        }
+    }
+
+    fn decode(&mut self, v: &Value) -> Vec<StreamEvent> {
+        let mut out = Vec::new();
+        match v["type"].as_str().unwrap_or("") {
+            "message_start" => {
+                let model = v["message"]["model"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                if let Some(n) = v["message"]["usage"]["input_tokens"].as_u64() {
+                    self.usage.input_tokens = n;
+                }
+                out.push(StreamEvent::MessageStart { model });
+            }
+            "content_block_start" => {
+                let index = v["index"].as_u64().unwrap_or(0);
+                let block = &v["content_block"];
+                if block["type"].as_str() == Some("tool_use") {
+                    let id = block["id"].as_str().unwrap_or_default().to_string();
+                    let name = block["name"].as_str().unwrap_or_default().to_string();
+                    self.tool_ids.insert(index, id.clone());
+                    out.push(StreamEvent::ToolUseStart { id, name });
+                }
+            }
+            "content_block_delta" => {
+                let index = v["index"].as_u64().unwrap_or(0);
+                let delta = &v["delta"];
+                match delta["type"].as_str().unwrap_or("") {
+                    "text_delta" => {
+                        if let Some(t) = delta["text"].as_str() {
+                            out.push(StreamEvent::TextDelta(t.to_string()));
+                        }
+                    }
+                    "thinking_delta" => {
+                        if let Some(t) = delta["thinking"].as_str() {
+                            out.push(StreamEvent::ThinkingDelta(t.to_string()));
+                        }
+                    }
+                    "input_json_delta" => {
+                        if let Some(p) = delta["partial_json"].as_str() {
+                            let id = self.tool_ids.get(&index).cloned().unwrap_or_default();
+                            out.push(StreamEvent::ToolUseInputDelta {
+                                id,
+                                partial_json: p.to_string(),
+                            });
+                        }
+                    }
+                    // signature_delta 등은 코어 이벤트로 표현하지 않으므로 무시.
+                    _ => {}
+                }
+            }
+            "content_block_stop" => out.push(StreamEvent::ContentBlockStop),
+            "message_delta" => {
+                if let Some(sr) = v["delta"]["stop_reason"].as_str() {
+                    self.stop = map_stop_reason(sr);
+                }
+                if let Some(n) = v["usage"]["output_tokens"].as_u64() {
+                    self.usage.output_tokens = n;
+                }
+            }
+            "message_stop" => out.push(self.message_stop()),
+            // ping 등은 무시.
+            _ => {}
+        }
+        out
+    }
+}
+
+/// Anthropic stop_reason → 코어 [`StopReason`].
+fn map_stop_reason(s: &str) -> StopReason {
+    match s {
+        "end_turn" => StopReason::EndTurn,
+        "max_tokens" => StopReason::MaxTokens,
+        "tool_use" => StopReason::ToolUse,
+        "stop_sequence" => StopReason::StopSequence,
+        "refusal" => StopReason::Refusal,
+        _ => StopReason::EndTurn,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(messages: Vec<Message>, tools: Vec<ToolSchema>) -> CompletionRequest {
+        CompletionRequest {
+            model: "claude-opus-4-8".into(),
+            system: Some("be terse".into()),
+            messages,
+            tools,
+            max_tokens: 1024,
+            effort: Some(Effort::Max),
+            thinking: ThinkingMode::Adaptive,
+        }
+    }
+
+    #[test]
+    fn wire_puts_system_top_level_and_maps_blocks() {
+        let assistant = Message::assistant(vec![ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "read".into(),
+            input: json!({ "path": "a.rs" }),
+        }]);
+        let wire = to_wire(&req(vec![Message::user("hi"), assistant], vec![]), true);
+        assert_eq!(wire["model"], "claude-opus-4-8");
+        assert_eq!(wire["system"], "be terse");
+        assert_eq!(wire["stream"], true);
+        assert_eq!(wire["thinking"]["type"], "adaptive");
+        // Max effort → high 로 클램프.
+        assert_eq!(wire["output_config"]["effort"], "high");
+        let msgs = wire["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"][0]["type"], "text");
+        assert_eq!(msgs[1]["role"], "assistant");
+        assert_eq!(msgs[1]["content"][0]["type"], "tool_use");
+        assert_eq!(msgs[1]["content"][0]["input"]["path"], "a.rs");
+    }
+
+    #[test]
+    fn wire_disabled_thinking_omits_thinking() {
+        let mut r = req(vec![Message::user("hi")], vec![]);
+        r.thinking = ThinkingMode::Disabled;
+        let wire = to_wire(&r, false);
+        assert!(wire.get("thinking").is_none());
+        assert!(wire.get("stream").is_none());
+    }
+
+    #[test]
+    fn tool_result_block_maps_to_anthropic_shape() {
+        let m = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "out".into(),
+                is_error: false,
+            }],
+        };
+        let wire = messages_to_wire(&[m]);
+        assert_eq!(wire[0]["content"][0]["type"], "tool_result");
+        assert_eq!(wire[0]["content"][0]["tool_use_id"], "t1");
+    }
+
+    fn decode_all(events: &[Value]) -> Vec<StreamEvent> {
+        let mut d = AnthropicDecoder::new();
+        let mut out = Vec::new();
+        for e in events {
+            out.extend(d.decode(e));
+        }
+        out
+    }
+
+    #[test]
+    fn decodes_text_stream_with_usage_and_stop() {
+        let events = vec![
+            json!({ "type": "message_start", "message": { "model": "claude-opus-4-8", "usage": { "input_tokens": 42 } } }),
+            json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text" } }),
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "Hel" } }),
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "lo" } }),
+            json!({ "type": "content_block_stop", "index": 0 }),
+            json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, "usage": { "output_tokens": 5 } }),
+            json!({ "type": "message_stop" }),
+        ];
+        let out = decode_all(&events);
+        assert!(
+            matches!(&out[0], StreamEvent::MessageStart { model } if model == "claude-opus-4-8")
+        );
+        let text: String = out
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::TextDelta(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hello");
+        match out.last().unwrap() {
+            StreamEvent::MessageStop { stop_reason, usage } => {
+                assert_eq!(*stop_reason, StopReason::EndTurn);
+                assert_eq!(usage.input_tokens, 42);
+                assert_eq!(usage.output_tokens, 5);
+            }
+            other => panic!("expected MessageStop, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decodes_tool_use_with_id_tracked_across_input_deltas() {
+        let events = vec![
+            json!({ "type": "message_start", "message": { "model": "m", "usage": { "input_tokens": 1 } } }),
+            json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "call_1", "name": "grep" } }),
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"q\":" } }),
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "\"x\"}" } }),
+            json!({ "type": "content_block_stop", "index": 0 }),
+            json!({ "type": "message_delta", "delta": { "stop_reason": "tool_use" }, "usage": { "output_tokens": 3 } }),
+            json!({ "type": "message_stop" }),
+        ];
+        let out = decode_all(&events);
+        assert!(
+            matches!(&out[1], StreamEvent::ToolUseStart { id, name } if id == "call_1" && name == "grep")
+        );
+        // input_json_delta 가 같은 index 의 tool id 를 달고 나온다.
+        let ids: Vec<&str> = out
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolUseInputDelta { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["call_1", "call_1"]);
+        assert!(matches!(
+            out.last().unwrap(),
+            StreamEvent::MessageStop {
+                stop_reason: StopReason::ToolUse,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stop_reason_mapping() {
+        assert_eq!(map_stop_reason("end_turn"), StopReason::EndTurn);
+        assert_eq!(map_stop_reason("max_tokens"), StopReason::MaxTokens);
+        assert_eq!(map_stop_reason("tool_use"), StopReason::ToolUse);
+        assert_eq!(map_stop_reason("stop_sequence"), StopReason::StopSequence);
+        assert_eq!(map_stop_reason("refusal"), StopReason::Refusal);
+        assert_eq!(map_stop_reason("???"), StopReason::EndTurn);
     }
 }
