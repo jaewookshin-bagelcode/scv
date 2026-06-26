@@ -112,7 +112,11 @@ async fn main() -> anyhow::Result<()> {
         )));
         reg
     };
-    let skills = scv_skills::load_dirs(&config.skills.dirs).unwrap_or_default();
+    // 스킬 디렉터리도 선행 `~/` 를 확장한다(전역 `~/.config/scv/skills`). 프로젝트 로컬
+    // `./.scv/skills` 는 cwd 기준 상대경로라 그대로 동작한다. 내장 compact 스킬은 항상 포함.
+    let skill_dirs: Vec<std::path::PathBuf> =
+        config.skills.dirs.iter().map(|d| expand_tilde(d)).collect();
+    let skills = scv_skills::load_dirs(&skill_dirs).unwrap_or_default();
     // 설정 기반 정적 권한 정책. TUI 모드에서는 App 이 이 게이트를 대화형 프롬프트와 합성한다
     // (Ask → 모달). 원샷 모드에서는 비대화형이라 Ask 도구는 거부된다(명시 allow 만 실행).
     let permissions = Arc::new(build_permission_gate(&config.permissions));
