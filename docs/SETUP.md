@@ -186,6 +186,11 @@ scv 는 **현재 디렉터리(cwd)를 작업 대상**으로 본다(도구의 파
 탐색 기준). 따라서 scv 저장소가 아니라 **대상 프로젝트 디렉터리에서** 실행한다. 설정은
 cwd 와 무관한 `~/.config/scv/config.toml` 을 쓰므로 어느 디렉터리에서 실행해도 동일하다.
 
+> **scv 는 자기 소스 레포 안에서는 실행을 거부한다**(자기 코드를 작업 대상으로 삼는 사고 방지,
+> `main.rs` 의 `is_within`/`scv_repo_root`). 이 레포에서 돌리면 거부된다 — 개발 중 의도적으로
+> 돌리려면 `SCV_ALLOW_IN_REPO=1 scv ...` 또는 `cargo run`(이 경우도 가드는 동일하게 적용되니
+> 같은 env 로 푼다). 코드 수정 후엔 `cargo install --path crates/scv-cli --force` 로 재설치한다.
+
 ```bash
 # 한 번 설치 → ~/.cargo/bin/scv (이 경로가 PATH 에 있어야 어디서든 `scv` 로 실행된다)
 cargo install --path crates/scv-cli

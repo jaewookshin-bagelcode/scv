@@ -63,6 +63,21 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
     let cli = Cli::parse();
 
+    // 0. 작업 디렉터리 확인 + scv 자기 소스 레포 안에서는 실행 거부(자기 코드를 작업 대상으로
+    //    삼는 사고 방지). 외부 프로젝트에서만 쓰도록 한다. `SCV_ALLOW_IN_REPO=1` 로 강제 해제.
+    let cwd = std::env::current_dir().context("현재 디렉터리 확인 실패")?;
+    if std::env::var_os("SCV_ALLOW_IN_REPO").is_none() {
+        if let Some(root) = scv_repo_root() {
+            if is_within(&cwd, &root) {
+                anyhow::bail!(
+                    "scv 는 자기 소스 레포({}) 안에서는 실행하지 않는다 — 작업할 다른 \
+                     프로젝트 디렉터리에서 실행하라. (개발 중 강제로 돌리려면 SCV_ALLOW_IN_REPO=1)",
+                    root.display()
+                );
+            }
+        }
+    }
+
     // 1. 설정 로드.
     let config = scv_config::Config::load().context("설정 로드 실패")?;
     let provider_id = cli.provider.as_deref().unwrap_or(&config.default_provider);
@@ -102,8 +117,7 @@ async fn main() -> anyhow::Result<()> {
     // (Ask → 모달). 원샷 모드에서는 비대화형이라 Ask 도구는 거부된다(명시 allow 만 실행).
     let permissions = Arc::new(build_permission_gate(&config.permissions));
 
-    // 5. 시스템 프롬프트 합성(안정적 → 휘발성 순).
-    let cwd = std::env::current_dir()?;
+    // 5. 시스템 프롬프트 합성(안정적 → 휘발성 순). cwd 는 0단계에서 구했다.
     let mut prompt = SystemPromptBuilder::new(BASE_IDENTITY)
         .environment(format!("OS: {}", std::env::consts::OS))
         .environment(format!("cwd: {}", cwd.display()));
@@ -225,6 +239,22 @@ fn parse_permission(s: &str) -> PermissionLevel {
     }
 }
 
+/// 이 바이너리를 빌드한 scv 소스 레포의 루트(빌드 시점 경로). `crates/scv-cli` 의 두 단계
+/// 위가 repo 루트다. 레포가 그 자리에 없으면(이동/삭제) None.
+fn scv_repo_root() -> Option<std::path::PathBuf> {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")); // .../scv/crates/scv-cli
+    manifest.parent()?.parent().map(|p| p.to_path_buf())
+}
+
+/// `cwd` 가 `root` 와 같거나 그 하위인가(심볼릭 링크 정규화 후 비교). 어느 쪽이든 정규화에
+/// 실패하면(존재하지 않는 경로 등) `false`(차단하지 않음).
+fn is_within(cwd: &std::path::Path, root: &std::path::Path) -> bool {
+    match (cwd.canonicalize(), root.canonicalize()) {
+        (Ok(c), Ok(r)) => c == r || c.starts_with(&r),
+        _ => false,
+    }
+}
+
 /// 설정의 경로 문자열에서 선행 `~/` 를 홈 디렉터리로 확장한다(없으면 그대로).
 fn expand_tilde(path: &str) -> std::path::PathBuf {
     match path.strip_prefix("~/") {
@@ -267,4 +297,36 @@ fn init_tracing() {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_permission_maps_and_defaults_to_ask() {
+        assert_eq!(parse_permission("allow"), PermissionLevel::Allow);
+        assert_eq!(parse_permission("DENY"), PermissionLevel::Deny);
+        assert_eq!(parse_permission("ask"), PermissionLevel::Ask);
+        assert_eq!(parse_permission("nonsense"), PermissionLevel::Ask);
+    }
+
+    #[test]
+    fn is_within_detects_descendant_and_rejects_sibling() {
+        let base = std::env::temp_dir().join(format!("scv-within-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("repo");
+        let sub = root.join("crates/scv-cli");
+        let outside = base.join("other");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        assert!(is_within(&root, &root), "root is within itself");
+        assert!(is_within(&sub, &root), "descendant is within root");
+        assert!(!is_within(&outside, &root), "sibling is not within root");
+        // 존재하지 않는 경로는 차단하지 않는다(canonicalize 실패 → false).
+        assert!(!is_within(&base.join("ghost"), &root));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
