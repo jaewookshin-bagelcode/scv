@@ -7,8 +7,13 @@
 
 #![warn(rust_2018_idioms, unreachable_pub)]
 
+mod bash;
+mod edit;
+mod glob;
+mod grep;
+mod path;
 mod read;
-// TODO(내장): mod write; mod edit; mod bash; mod glob; mod grep;
+mod write;
 // TODO(계획): mod web_fetch;       // HTTP GET. egress → 권한 Ask/도메인 allowlist, parallel_safe.
 //             mod transcript_search; // 세션 JSONL·파일 정확 일치 검색(정밀 추출). reqwest 의존 추가.
 
@@ -17,14 +22,24 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use scv_core::tool::{PermissionGate, PermissionLevel, ToolRegistry};
 
+pub use bash::BashTool;
+pub use edit::EditTool;
+pub use glob::GlobTool;
+pub use grep::GrepTool;
 pub use read::ReadTool;
+pub use write::WriteTool;
 
 /// 내장 도구를 모두 등록한 레지스트리를 만든다.
 pub fn default_registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
+    // 읽기 전용(Allow + parallel_safe).
     reg.register(Arc::new(ReadTool));
-    // reg.register(Arc::new(WriteTool));
-    // reg.register(Arc::new(BashTool));
+    reg.register(Arc::new(GlobTool));
+    reg.register(Arc::new(GrepTool));
+    // 비가역(Ask 게이팅 — fail-closed: 대화형 모달/명시적 Allow 없이는 거부됨).
+    reg.register(Arc::new(WriteTool));
+    reg.register(Arc::new(EditTool));
+    reg.register(Arc::new(BashTool));
     // 계획 도구:
     // reg.register(Arc::new(WebFetchTool));        // HTTP GET (egress 권한 게이팅)
     // reg.register(Arc::new(TranscriptSearchTool)); // 세션/파일 정밀 추출
@@ -44,7 +59,10 @@ pub struct StaticPermissionGate {
 
 impl StaticPermissionGate {
     pub fn new(default: PermissionLevel) -> Self {
-        Self { default, overrides: std::collections::BTreeMap::new() }
+        Self {
+            default,
+            overrides: std::collections::BTreeMap::new(),
+        }
     }
 
     pub fn with_override(mut self, tool: impl Into<String>, level: PermissionLevel) -> Self {

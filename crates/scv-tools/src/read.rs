@@ -41,16 +41,14 @@ impl Tool for ReadTool {
         let Some(rel) = input.get("path").and_then(|v| v.as_str()) else {
             return ToolOutput::error("missing `path`");
         };
-
         // 보안: 경로를 workdir 안으로 제한한다(.. 탈출/심볼릭 링크 방지).
-        let path = ctx.workdir.join(rel);
-        match path.canonicalize() {
-            Ok(canon) if canon.starts_with(&ctx.workdir) => match tokio::fs::read_to_string(&canon).await {
-                Ok(text) => ToolOutput::ok(text),
-                Err(e) => ToolOutput::error(format!("read failed: {e}")),
-            },
-            Ok(_) => ToolOutput::error("path escapes workspace root"),
-            Err(e) => ToolOutput::error(format!("invalid path: {e}")),
+        let path = match crate::path::confine_existing(&ctx.workdir, rel) {
+            Ok(p) => p,
+            Err(e) => return ToolOutput::error(e),
+        };
+        match tokio::fs::read_to_string(&path).await {
+            Ok(text) => ToolOutput::ok(text),
+            Err(e) => ToolOutput::error(format!("read failed: {e}")),
         }
     }
 }
