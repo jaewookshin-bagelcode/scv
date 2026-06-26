@@ -11,20 +11,35 @@
 
 ## 설치
 
+### 방법 A — 심볼릭 링크 스크립트 (권장)
+
+`scv` 를 PATH 의 bin 디렉터리에 **심볼릭 링크**로 걸어 어디서든 `scv` 로 부른다. 링크가
+release 바이너리를 가리키므로 **코드 수정 후 `cargo build --release` 만 다시 하면 재설치 없이**
+최신 바이너리가 반영된다.
+
 ```bash
-# 레포에서 한 번 설치 → ~/.cargo/bin/scv (PATH 에 있으면 어디서든 `scv` 로 실행)
-cargo install --path crates/scv-cli
+sh scripts/scv-link.sh install      # release 빌드 + 링크 생성
+sh scripts/scv-link.sh status       # 링크/PATH 상태 확인
+sh scripts/scv-link.sh uninstall    # 링크 제거
 ```
 
-`scv` 가 안 잡히면 `~/.cargo/bin` 이 PATH 에 있는지 확인한다(보통 `~/.cargo/env` 가 셸 프로필에서
-로드됨). 없으면 셸 설정에 추가:
+- bin 디렉터리는 **PATH 에 이미 있는 곳을 자동 선택**한다(`~/.local/bin` → `~/.cargo/bin` 순,
+  과거 설치본이 있으면 그 자리를 덮어 섀도잉 방지). 직접 지정: `SCV_BIN_DIR=/path sh scripts/scv-link.sh install`.
+- 다른 `scv` 가 PATH 우선순위로 링크를 가리면 경고한다.
+
+### 방법 B — cargo install (복사본)
+
+```bash
+cargo install --path crates/scv-cli         # → ~/.cargo/bin/scv (복사본)
+cargo install --path crates/scv-cli --force # 코드 수정 후 재설치(복사본은 그 시점 스냅샷)
+```
+
+`scv` 가 안 잡히면 `~/.cargo/bin`(또는 위 bin 디렉터리)이 PATH 에 있는지 확인한다(보통
+`~/.cargo/env` 가 셸 프로필에서 로드됨). 없으면 셸 설정에 추가:
 
 ```bash
 echo '. "$HOME/.cargo/env"' >> ~/.zshrc   # 또는: export PATH="$HOME/.cargo/bin:$PATH"
 ```
-
-> **코드 수정 후에는 재설치**해야 반영된다(설치본은 그 시점 스냅샷):
-> `cargo install --path crates/scv-cli --force`
 
 ### 로컬 모델 준비(기본 프로바이더)
 
