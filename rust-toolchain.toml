@@ -1,5 +1,9 @@
 # 팀 전원이 동일한 툴체인을 쓰도록 고정한다. rustup 이 자동으로 설치/전환한다.
+# 1.96.0 으로 고정: 의존성 트리(uuid/zeroize/wasi 백엔드 등)가 edition2024
+# (Rust 1.85+, 일부 1.87+)를 요구하므로 그 미만 툴체인으로는 빌드되지 않는다.
 [toolchain]
-channel = "1.83.0"
-components = ["rustfmt", "clippy", "rust-src"]
+channel = "1.96.0"
+# llvm-tools: 커버리지 게이트(`scripts/coverage.sh`, cargo-llvm-cov)가 요구한다
+# (1.96 기준 컴포넌트 이름은 `llvm-tools` — 구 `llvm-tools-preview` 별칭은 충돌).
+components = ["rustfmt", "clippy", "rust-src", "llvm-tools"]
 profile = "default"

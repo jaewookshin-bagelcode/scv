@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.96"
 license = "MIT"
 authors = ["bagelcode"]
 repository = "https://github.com/bagelcode/scv"
@@ -14,6 +14,7 @@ repository = "https://github.com/bagelcode/scv"
 [workspace.dependencies]
 # --- async runtime ---
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-std", "sync", "time", "signal"] }
+tokio-util = "0.7" # CancellationToken (협조적 취소)
 futures = "0.3"
 async-trait = "0.1"
 
@@ -46,6 +47,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 globset = "0.4" # glob 툴
 ignore = "0.4"  # .gitignore 인지 파일 탐색
+regex = "1"     # grep 툴(정규식 콘텐츠 검색)
 
 # 내부 크레이트
 scv-core = { path = "crates/scv-core" }
