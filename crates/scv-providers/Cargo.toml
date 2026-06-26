@@ -15,6 +15,7 @@ eventsource-stream.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+tiktoken-rs.workspace = true
 
 # 통합 테스트(tests/openai_http.rs)에서 로컬 mock SSE 서버로 stream 을 구동한다.
 [dev-dependencies]

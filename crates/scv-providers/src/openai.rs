@@ -109,14 +109,51 @@ impl Provider for OpenAiProvider {
 
     async fn count_tokens(
         &self,
-        _system: Option<&str>,
-        _messages: &[Message],
-        _tools: &[ToolSchema],
+        system: Option<&str>,
+        messages: &[Message],
+        tools: &[ToolSchema],
     ) -> Result<u64> {
-        // TODO(roadmap 3a): 로컬 토크나이저(tiktoken o200k_base)로 추정. OpenAI 엔 count
-        //   엔드포인트가 없다. 평상시 compaction 신호로는 returned usage 를 우선 쓴다.
-        Ok(0)
+        // OpenAI 엔 count 엔드포인트가 없어 **로컬 토크나이저(o200k_base)로 추정**한다.
+        // 평상시 compaction 신호로는 직전 응답의 usage 를 우선 쓰고, 이건 사전 점검 보조.
+        let text = render_for_count(system, messages, tools);
+        let bpe = tiktoken_rs::o200k_base()
+            .map_err(|e| Error::Provider(format!("tokenizer init failed: {e}")))?;
+        let content = bpe.encode_ordinary(&text).len() as u64;
+        // 메시지마다 role/구분자 등 포맷 오버헤드를 대략 더한다(추정값이라 정확할 필요는 없다).
+        Ok(content + messages.len() as u64 * 4)
     }
+}
+
+/// count_tokens 추정용으로 요청 구성을 하나의 텍스트로 펼친다 — **순수**(테스트 가능).
+/// 토큰 추정이 목적이라 형식보다 **포함된 모든 텍스트**(시스템·메시지 본문·도구 입력/결과·
+/// 도구 스키마)를 빠짐없이 담는 게 중요하다.
+fn render_for_count(system: Option<&str>, messages: &[Message], tools: &[ToolSchema]) -> String {
+    let mut s = String::new();
+    if let Some(sys) = system {
+        s.push_str(sys);
+        s.push('\n');
+    }
+    for m in messages {
+        for block in &m.content {
+            match block {
+                ContentBlock::Text { text } => s.push_str(text),
+                ContentBlock::Thinking { text, .. } => s.push_str(text),
+                ContentBlock::ToolUse { name, input, .. } => {
+                    s.push_str(name);
+                    s.push_str(&input.to_string());
+                }
+                ContentBlock::ToolResult { content, .. } => s.push_str(content),
+            }
+            s.push('\n');
+        }
+    }
+    for t in tools {
+        s.push_str(&t.name);
+        s.push_str(&t.description);
+        s.push_str(&t.input_schema.to_string());
+        s.push('\n');
+    }
+    s
 }
 
 // ───────────────────────── 요청: 코어 → OpenAI 와이어 ─────────────────────────
@@ -750,5 +787,50 @@ mod tests {
         assert_eq!(map_finish_reason("tool_calls"), StopReason::ToolUse);
         assert_eq!(map_finish_reason("content_filter"), StopReason::Refusal);
         assert_eq!(map_finish_reason("weird"), StopReason::EndTurn);
+    }
+
+    #[test]
+    fn render_for_count_includes_all_text() {
+        let msgs = vec![
+            Message::user("hello world"),
+            Message::assistant(vec![ContentBlock::ToolUse {
+                id: "c1".into(),
+                name: "grep".into(),
+                input: json!({ "pattern": "needle" }),
+            }]),
+        ];
+        let tools = vec![ToolSchema {
+            name: "grep".into(),
+            description: "search".into(),
+            input_schema: json!({ "type": "object" }),
+        }];
+        let rendered = render_for_count(Some("be terse"), &msgs, &tools);
+        for needle in ["be terse", "hello world", "grep", "needle", "search"] {
+            assert!(
+                rendered.contains(needle),
+                "missing `{needle}` in: {rendered}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn count_tokens_is_positive_and_monotonic() {
+        let p = OpenAiProvider::new("openai", "gpt-5.5".into(), "k".into(), None, false);
+        let short = p
+            .count_tokens(Some("sys"), &[Message::user("hi")], &[])
+            .await
+            .expect("count");
+        let long = p
+            .count_tokens(
+                Some("sys"),
+                &[Message::user(
+                    "this is a substantially longer user message with many more tokens",
+                )],
+                &[],
+            )
+            .await
+            .expect("count");
+        assert!(short > 0, "non-empty request should count > 0");
+        assert!(long > short, "more text should estimate more tokens");
     }
 }

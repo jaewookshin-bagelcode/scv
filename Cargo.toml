@@ -49,6 +49,7 @@ dirs = "5"
 globset = "0.4" # glob 툴
 ignore = "0.4"  # .gitignore 인지 파일 탐색
 regex = "1"     # grep 툴(정규식 콘텐츠 검색)
+tiktoken-rs = "0.6" # OpenAI 로컬 토크나이저(o200k_base) — count_tokens 추정
 
 # 내부 크레이트
 scv-core = { path = "crates/scv-core" }
