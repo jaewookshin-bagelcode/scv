@@ -6,6 +6,7 @@
 
 mod project_context;
 mod session_store;
+mod workspace;
 
 use std::sync::Arc;
 
@@ -50,6 +51,11 @@ struct Cli {
     /// 텍스트 스트리밍·하네스만 확인할 때 쓴다.
     #[arg(long)]
     no_tools: bool,
+
+    /// 세션 격리: cwd 가 git repo 면 세션별 worktree 를 만들어 그 안에서 작업한다
+    /// (동시 세션이 같은 파일을 건드리는 충돌 방지, 종료 시 정리). ARCHITECTURE §4.2.
+    #[arg(long)]
+    isolate: bool,
 }
 
 #[tokio::main]
@@ -107,7 +113,23 @@ async fn main() -> anyhow::Result<()> {
     }
     let system_prompt = prompt.skills(&skills).build();
 
-    // 6. 에이전트 조립. 취소 토큰은 한 턴 동안 공유한다(원샷 Ctrl-C 도 같은 토큰을 끈다).
+    // 6. 세션 저장소 + 세션 로드(--resume)/생성. JSONL 트랜스크립트로 재개·감사 가능.
+    let store = FileSessionStore::new(expand_tilde(&config.session.dir));
+    let mut session = match &cli.resume {
+        Some(id) => store
+            .load(&SessionId(id.clone()))
+            .await
+            .with_context(|| format!("세션 `{id}` 로드 실패"))?,
+        None => Session::new(),
+    };
+
+    // 6.5. 세션 격리(ARCHITECTURE §4.2): --isolate 면 세션별 git worktree 를 만들어 그 경로를
+    //   도구 workdir 로 준다(종료 시 Drop 정리). 비격리/비-git 이면 cwd 를 그대로 쓴다.
+    //   `_workspace` 는 main 끝까지 살아 있어야 worktree 가 유지된다(Drop 이 정리).
+    let _workspace = workspace::SessionWorkspace::create(&cwd, &session.id.0, cli.isolate);
+    let workdir = _workspace.path().to_path_buf();
+
+    // 7. 에이전트 조립. 취소 토큰은 한 턴 동안 공유한다(원샷 Ctrl-C 도 같은 토큰을 끈다).
     //    컨텍스트 관리: 임계(compact_threshold_tokens) 초과 시 오래된 앞부분을 같은 모델로
     //    요약(compaction)한다. 최근 KEEP_RECENT 개 메시지는 verbatim 유지(ROADMAP 3b).
     let context = Arc::new(SummarizingContextManager::new(
@@ -128,19 +150,9 @@ async fn main() -> anyhow::Result<()> {
         effort: parse_effort(cli.effort.as_deref().unwrap_or(&config.agent.effort)),
         max_tool_iterations: config.agent.max_tool_iterations,
         tool_ctx: ToolContext {
-            workdir: cwd,
+            workdir,
             cancel: cancel.clone(),
         },
-    };
-
-    // 7. 세션 저장소 + 세션 로드(--resume)/생성. JSONL 트랜스크립트로 재개·감사 가능.
-    let store = FileSessionStore::new(expand_tilde(&config.session.dir));
-    let mut session = match &cli.resume {
-        Some(id) => store
-            .load(&SessionId(id.clone()))
-            .await
-            .with_context(|| format!("세션 `{id}` 로드 실패"))?,
-        None => Session::new(),
     };
 
     // 8. 모드 분기.
