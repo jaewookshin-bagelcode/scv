@@ -526,11 +526,15 @@ impl App {
                 self.transcript
                     .push(format!("[skills: {} — run with /<name>]", names.join(", ")));
             }
-            Command::Help => self.transcript.push(
-                "[commands: /provider <id>, /model <id>, /providers, /skills, /<skill>, /help \
-                 · PageUp/PageDown scroll]"
-                    .to_string(),
-            ),
+            Command::Help => {
+                self.transcript.push(
+                    "[commands] /provider <id> · /model <id> · /providers · /skills · /<skill> · /help"
+                        .to_string(),
+                );
+                self.transcript.push(
+                    "[keys] PageUp / PageDown 키로 대화 스크롤 · Ctrl-C 중단/종료".to_string(),
+                );
+            }
             Command::Unknown(c) => self
                 .transcript
                 .push(format!("[unknown: /{c} — try /help or /skills]")),
