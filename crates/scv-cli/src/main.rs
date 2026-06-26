@@ -66,9 +66,12 @@ async fn main() -> anyhow::Result<()> {
         .find(|p| p.id == provider_id)
         .with_context(|| format!("프로바이더 `{provider_id}` 설정 없음"))?;
 
-    // 2. 비밀(API 키)은 환경변수에서만 읽는다.
-    let api_key = std::env::var(&pconf.api_key_env)
-        .with_context(|| format!("환경변수 `{}` 미설정", pconf.api_key_env))?;
+    // 2. 비밀(API 키)은 환경변수에서만 읽는다. `api_key_env` 가 없으면 무인증
+    //    (로컬 Ollama 등 키가 필요 없는 백엔드 — ROADMAP 4e). 키 없이 바로 동작한다.
+    let api_key = match pconf.api_key_env.as_deref() {
+        Some(env) => std::env::var(env).with_context(|| format!("환경변수 `{env}` 미설정"))?,
+        None => String::new(),
+    };
 
     // 3. 프로바이더 생성.
     let model = cli.model.clone().unwrap_or_else(|| pconf.model.clone());

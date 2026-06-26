@@ -58,9 +58,8 @@ cargo build --release
 ollama serve                 # 백그라운드 데몬(이미 떠 있으면 생략)
 ollama pull qwen3.5:9b       # 기본 모델(tool calling 지원 — 코딩 에이전트에 필수)
 
-# scv 는 api_key_env 를 요구하므로 아무 값이나 넣는다(Ollama 는 키를 무시).
-export OLLAMA_API_KEY=ollama
-export SCV_LOG=info          # trace|debug|info|warn|error
+# 키·환경변수 불필요: ollama 프로바이더는 api_key_env 가 없어 무인증으로 동작한다.
+export SCV_LOG=info          # (선택) trace|debug|info|warn|error
 ```
 
 클라우드(OpenAI/Anthropic)로 전환해 쓰려면 해당 키를 환경변수로 둔다. 비밀은
@@ -145,9 +144,9 @@ cargo run --bin scv -- --resume <session-id>
 
 원샷 모드(`stream` 구현 완료)로 실제 모델을 호출할 수 있다.
 
-**기본(로컬 Ollama).** §3.1 대로 `ollama serve` + `ollama pull qwen3.5:9b` + `OLLAMA_API_KEY`
-만 되어 있으면 키·네트워크 없이 바로 돈다. 로컬은 호환 모드라 `reasoning_effort`·
-`stream_options` 를 **자동 생략**하므로 `--effort` 설정과 무관하게 동작한다:
+**기본(로컬 Ollama).** §3.1 대로 `ollama serve` + `ollama pull qwen3.5:9b` 만 되어 있으면
+키·환경변수·네트워크 없이 바로 돈다(ollama 프로바이더는 무인증). 로컬은 호환 모드라
+`reasoning_effort`·`stream_options` 를 **자동 생략**하므로 `--effort` 설정과 무관하게 동작한다:
 
 ```bash
 cargo run --bin scv -- "이 repo 구조를 한 문단으로 설명해줘"

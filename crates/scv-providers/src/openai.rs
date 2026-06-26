@@ -84,11 +84,13 @@ impl Provider for OpenAiProvider {
     async fn stream(&self, request: CompletionRequest) -> Result<EventStream> {
         let wire = to_wire(&request, self.compat);
         let url = format!("{}/chat/completions", self.base_url);
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&wire)
+        let mut req = self.http.post(&url).json(&wire);
+        // 키가 비어 있으면(무인증 백엔드, 예: 로컬 Ollama) Authorization 헤더를 생략한다 —
+        // 빈 `Bearer ` 를 까다롭게 거르는 게이트웨이를 피한다(ROADMAP 4e).
+        if !self.api_key.is_empty() {
+            req = req.bearer_auth(&self.api_key);
+        }
+        let resp = req
             .send()
             .await
             .map_err(|e| Error::Provider(format!("request failed: {e}")))?;
