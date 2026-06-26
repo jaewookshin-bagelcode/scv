@@ -83,7 +83,9 @@ async fn main() -> anyhow::Result<()> {
         scv_tools::default_registry()
     };
     let skills = scv_skills::load_dirs(&config.skills.dirs).unwrap_or_default();
-    let permissions = Arc::new(StaticPermissionGate::new(PermissionLevel::Ask));
+    // 설정 기반 정적 권한 정책. TUI 모드에서는 App 이 이 게이트를 대화형 프롬프트와 합성한다
+    // (Ask → 모달). 원샷 모드에서는 비대화형이라 Ask 도구는 거부된다(명시 allow 만 실행).
+    let permissions = Arc::new(build_permission_gate(&config.permissions));
 
     // 5. 시스템 프롬프트 합성(안정적 → 휘발성 순).
     let cwd = std::env::current_dir()?;
@@ -153,13 +155,45 @@ async fn main() -> anyhow::Result<()> {
             println!("[session {}]", session.id.0);
         }
         None => {
-            // 인터랙티브 TUI. (roadmap 2a: 세션 루프/저장은 App 안에서.)
-            let mut app = scv_tui::App::new();
-            app.run().await?;
+            // 인터랙티브 TUI: 대화 루프·권한 모달·인터럽트·진행 표시·턴별 세션 저장(§4.5).
+            // App 이 agent.permissions 를 대화형 게이트로 감싸 Ask 도구를 모달로 승인받는다.
+            let spinner = scv_tui::SpinnerStyle::from_config(&config.ui.spinner);
+            let mut app = scv_tui::App::new(spinner);
+            app.run(agent, session, &store)
+                .await
+                .context("TUI 실행 실패")?;
         }
     }
 
     Ok(())
+}
+
+/// 설정의 `[permissions]` 를 정적 권한 게이트로 만든다. `default` + 도구별 오버라이드.
+/// 알 수 없는 값은 가장 안전한 `Ask` 로 둔다(fail-closed).
+fn build_permission_gate(cfg: &scv_config::PermissionsConfig) -> StaticPermissionGate {
+    let default = cfg
+        .default
+        .as_deref()
+        .map(parse_permission)
+        .unwrap_or(PermissionLevel::Ask);
+    let mut gate = StaticPermissionGate::new(default);
+    for (tool, level) in &cfg.tools {
+        gate = gate.with_override(tool.clone(), parse_permission(level));
+    }
+    gate
+}
+
+/// 권한 문자열(`allow`/`ask`/`deny`)을 [`PermissionLevel`] 로. 미지의 값은 `Ask`.
+fn parse_permission(s: &str) -> PermissionLevel {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "allow" => PermissionLevel::Allow,
+        "deny" => PermissionLevel::Deny,
+        "ask" => PermissionLevel::Ask,
+        other => {
+            tracing::warn!(level = %other, "unknown permission level; defaulting to ask");
+            PermissionLevel::Ask
+        }
+    }
 }
 
 /// 설정의 경로 문자열에서 선행 `~/` 를 홈 디렉터리로 확장한다(없으면 그대로).
