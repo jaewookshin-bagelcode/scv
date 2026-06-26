@@ -39,7 +39,11 @@ pub struct Session {
 
 impl Session {
     pub fn new() -> Self {
-        Self { id: SessionId::new(), created_at: chrono::Utc::now(), messages: Vec::new() }
+        Self {
+            id: SessionId::new(),
+            created_at: chrono::Utc::now(),
+            messages: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, message: Message) {
@@ -64,4 +68,36 @@ pub trait SessionStore: Send + Sync {
 
     /// 저장된 세션 목록.
     async fn list(&self) -> Result<Vec<SessionId>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::Message;
+
+    #[test]
+    fn new_session_is_empty_with_unique_id() {
+        let a = Session::new();
+        let b = Session::new();
+        assert!(a.messages.is_empty());
+        assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn push_appends_in_order() {
+        let mut s = Session::default();
+        s.push(Message::user("one"));
+        s.push(Message::user("two"));
+        assert_eq!(s.messages.len(), 2);
+    }
+
+    #[test]
+    fn session_round_trips_through_serde() {
+        let mut s = Session::new();
+        s.push(Message::user("hi"));
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, s.id);
+        assert_eq!(back.messages.len(), 1);
+    }
 }

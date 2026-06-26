@@ -26,7 +26,10 @@ pub struct SystemPromptBuilder {
 impl SystemPromptBuilder {
     /// 에이전트 기본 정체성/규칙으로 시작한다.
     pub fn new(base_identity: impl Into<String>) -> Self {
-        Self { base: base_identity.into(), ..Default::default() }
+        Self {
+            base: base_identity.into(),
+            ..Default::default()
+        }
     }
 
     /// 환경 정보 한 줄(예: "OS: macOS", "cwd: /repo").
@@ -44,7 +47,8 @@ impl SystemPromptBuilder {
     /// 레지스트리의 스킬 요약을 "사용 가능한 스킬" 섹션으로 추가한다.
     pub fn skills(mut self, registry: &SkillRegistry) -> Self {
         for meta in registry.summaries() {
-            self.skills.push(format!("- {}: {}", meta.name, meta.description));
+            self.skills
+                .push(format!("- {}: {}", meta.name, meta.description));
         }
         self
     }
@@ -77,5 +81,46 @@ impl SystemPromptBuilder {
             out.push_str(&self.reminders.join("\n"));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skill::{Skill, SkillMeta, SkillRegistry};
+
+    #[test]
+    fn build_orders_sections_stable_to_volatile() {
+        let mut skills = SkillRegistry::new();
+        skills.insert(Skill {
+            meta: SkillMeta {
+                name: "pdf".into(),
+                description: "make pdf".into(),
+                when_to_use: None,
+            },
+            dir: std::path::PathBuf::from("/x"),
+            body: None,
+        });
+        let out = SystemPromptBuilder::new("BASE")
+            .environment("OS: test")
+            .project_context("PROJECT RULES")
+            .skills(&skills)
+            .reminder("REMIND")
+            .build();
+        // 순서: base → environment → project → skills → reminders (캐시 친화 prefix).
+        let base = out.find("BASE").unwrap();
+        let env = out.find("# Environment").unwrap();
+        let proj = out.find("# Project context").unwrap();
+        let sk = out.find("# Available skills").unwrap();
+        let rem = out.find("# Reminders").unwrap();
+        assert!(base < env && env < proj && proj < sk && sk < rem);
+        assert!(out.contains("PROJECT RULES"));
+        assert!(out.contains("- pdf: make pdf"));
+        assert!(out.contains("REMIND"));
+    }
+
+    #[test]
+    fn build_omits_empty_sections() {
+        assert_eq!(SystemPromptBuilder::new("BASE").build(), "BASE");
     }
 }

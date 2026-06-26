@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+/// 협조적 취소 토큰. 다른 크레이트가 `tokio-util` 에 직접 의존하지 않도록 코어가 재노출한다.
+pub use tokio_util::sync::CancellationToken;
 
 use crate::provider::ToolSchema;
 
@@ -47,8 +49,10 @@ pub struct ToolContext {
     /// 같은 repo 다중 세션을 격리하려면 세션마다 다른 workdir(예: per-session git
     /// worktree)를 주입한다(ARCHITECTURE.md §4.2 세션 격리).
     pub workdir: std::path::PathBuf,
-    /// 취소 신호(사용자가 Esc/Ctrl-C 로 턴을 중단할 때).
-    pub cancel: tokio_util_placeholder::CancellationToken,
+    /// 취소 신호(사용자가 Esc/Ctrl-C 로 턴을 중단할 때). 긴 도구는 주기적으로
+    /// `cancel.is_cancelled()` 를 확인하거나 await 루프를 `cancel.cancelled()` 와
+    /// `tokio::select!` 한다(협조적 취소 — ARCHITECTURE §2·§4.5).
+    pub cancel: CancellationToken,
 }
 
 /// 도구 실행 결과.
@@ -61,10 +65,16 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub fn ok(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: false }
+        Self {
+            content: content.into(),
+            is_error: false,
+        }
     }
     pub fn error(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: true }
+        Self {
+            content: content.into(),
+            is_error: true,
+        }
     }
 }
 
@@ -142,14 +152,60 @@ impl ToolRegistry {
     }
 }
 
-/// NOTE: 실제 구현에서는 `tokio_util::sync::CancellationToken` 을 쓴다.
-/// 스캐폴드 단계에서 의존성을 늘리지 않으려고 동일 인터페이스의 자리표시자를 둔다.
-pub mod tokio_util_placeholder {
-    #[derive(Debug, Clone, Default)]
-    pub struct CancellationToken;
-    impl CancellationToken {
-        pub fn is_cancelled(&self) -> bool {
-            false
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct DummyTool;
+
+    #[async_trait]
+    impl Tool for DummyTool {
+        fn name(&self) -> &str {
+            "dummy"
         }
+        fn description(&self) -> &str {
+            "dummy tool"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        async fn invoke(&self, _input: serde_json::Value, _ctx: &ToolContext) -> ToolOutput {
+            ToolOutput::ok("done")
+        }
+    }
+
+    #[test]
+    fn registry_register_get_and_schemas() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(DummyTool));
+        assert!(reg.get("dummy").is_some());
+        assert!(reg.get("nope").is_none());
+        let schemas = reg.schemas();
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0].name, "dummy");
+    }
+
+    #[test]
+    fn output_helpers_and_default_permission() {
+        assert!(!ToolOutput::ok("x").is_error);
+        assert!(ToolOutput::error("x").is_error);
+        // 기본 권한은 Ask, 기본은 병렬 불가.
+        assert_eq!(
+            DummyTool.permission(&serde_json::json!({})),
+            PermissionLevel::Ask
+        );
+        assert!(!DummyTool.parallel_safe());
+    }
+
+    #[tokio::test]
+    async fn invoke_runs_with_context() {
+        let ctx = ToolContext {
+            workdir: std::env::temp_dir(),
+            cancel: CancellationToken::new(),
+        };
+        let out = DummyTool.invoke(serde_json::json!({}), &ctx).await;
+        assert!(!out.is_error);
+        assert_eq!(out.content, "done");
     }
 }

@@ -9,6 +9,7 @@ license.workspace = true
 # 어떤 구체 프로바이더/도구 크레이트에도 의존하지 않는다(의존성 역전).
 [dependencies]
 tokio.workspace = true
+tokio-util.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true

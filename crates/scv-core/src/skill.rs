@@ -72,3 +72,34 @@ impl SkillRegistry {
         self.skills.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn skill(name: &str) -> Skill {
+        Skill {
+            meta: SkillMeta {
+                name: name.into(),
+                description: format!("{name} desc"),
+                when_to_use: None,
+            },
+            dir: PathBuf::from("/x"),
+            body: None,
+        }
+    }
+
+    #[test]
+    fn insert_get_and_sorted_summaries() {
+        let mut reg = SkillRegistry::new();
+        assert!(reg.is_empty());
+        reg.insert(skill("b"));
+        reg.insert(skill("a"));
+        assert!(!reg.is_empty());
+        assert!(reg.get("a").is_some());
+        assert!(reg.get("missing").is_none());
+        // BTreeMap 이라 요약은 이름 정렬 순.
+        let names: Vec<_> = reg.summaries().map(|m| m.name.clone()).collect();
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+}

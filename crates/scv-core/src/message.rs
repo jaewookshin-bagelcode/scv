@@ -66,11 +66,17 @@ pub struct Message {
 
 impl Message {
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: vec![ContentBlock::text(text)] }
+        Self {
+            role: Role::User,
+            content: vec![ContentBlock::text(text)],
+        }
     }
 
     pub fn assistant(content: Vec<ContentBlock>) -> Self {
-        Self { role: Role::Assistant, content }
+        Self {
+            role: Role::Assistant,
+            content,
+        }
     }
 
     /// 이 메시지에 포함된 tool_use 블록들을 순회한다.
@@ -127,5 +133,95 @@ pub enum StreamEvent {
     /// 콘텐츠 블록 하나 종료.
     ContentBlockStop,
     /// 응답 종료. 정규화된 stop_reason 과 누적 usage.
-    MessageStop { stop_reason: StopReason, usage: Usage },
+    MessageStop {
+        stop_reason: StopReason,
+        usage: Usage,
+    },
+}
+
+/// 에이전트 루프가 [`Observer`](crate::agent::Observer) 에 흘리는 **관찰 전용** 라이프
+/// 사이클 통지(TUI 렌더·진행 표시용). 프로바이더 스트림 증분은 [`Self::Stream`] 으로
+/// 감싸고, 도구 실행·권한·취소처럼 루프 차원의 사건은 별도 변형으로 알린다.
+///
+/// `on_event` 은 `()` 를 돌려줘 **되먹임이 불가**하다 — 인터럽트의 실제 메커니즘은
+/// `CancellationToken`, 권한 승인은 `PermissionGate::decide` 의 반환값이다(ARCHITECTURE §4.5).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum AgentEvent {
+    /// 프로바이더 스트림 증분(텍스트/사고/도구 입력 등).
+    Stream(StreamEvent),
+    /// 도구 실행 시작.
+    ToolStart { name: String },
+    /// 도구 실행 종료(에러 여부 포함).
+    ToolEnd { name: String, is_error: bool },
+    /// `Ask` 도구가 권한 게이트의 결정을 기다린다(사후 통지).
+    PermissionAsked { name: String },
+    /// 사용자 인터럽트로 턴이 중단됐다(사후 통지).
+    Interrupted,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_message_has_single_text_block() {
+        let m = Message::user("hi");
+        assert!(matches!(m.role, Role::User));
+        assert_eq!(m.content.len(), 1);
+        assert!(matches!(&m.content[0], ContentBlock::Text { text } if text == "hi"));
+    }
+
+    #[test]
+    fn tool_uses_filters_only_tool_use_blocks() {
+        let m = Message::assistant(vec![
+            ContentBlock::text("thinking out loud"),
+            ContentBlock::ToolUse {
+                id: "c1".into(),
+                name: "read".into(),
+                input: serde_json::json!({ "path": "a" }),
+            },
+            ContentBlock::ToolUse {
+                id: "c2".into(),
+                name: "glob".into(),
+                input: serde_json::json!({}),
+            },
+        ]);
+        let uses: Vec<_> = m.tool_uses().collect();
+        assert_eq!(uses.len(), 2);
+        assert_eq!(uses[0].0, "c1");
+        assert_eq!(uses[0].1, "read");
+        assert_eq!(uses[1].1, "glob");
+    }
+
+    #[test]
+    fn content_block_serde_uses_type_tag() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "c1".into(),
+            content: "ok".into(),
+            is_error: false,
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        assert!(json.contains("\"type\":\"tool_result\""));
+        let back: ContentBlock = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back,
+            ContentBlock::ToolResult {
+                is_error: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stop_reason_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&StopReason::ToolUse).unwrap(),
+            "\"tool_use\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StopReason::EndTurn).unwrap(),
+            "\"end_turn\""
+        );
+    }
 }

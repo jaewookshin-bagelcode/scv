@@ -41,6 +41,11 @@ pub enum Error {
     #[error("exceeded max tool iterations ({0})")]
     MaxIterations(usize),
 
+    /// 사용자가 턴을 중단함(Ctrl-C 등). 크래시가 아니라 정상적인 협조적 취소 —
+    /// 모은 부분 결과는 세션에 보존된다(ARCHITECTURE §2).
+    #[error("turn cancelled")]
+    Cancelled,
+
     /// 직렬화/역직렬화 오류.
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
