@@ -12,12 +12,15 @@
 //!   (`budget_tokens` 는 4.7/4.8 에서 400). 이 어댑터의 기본 모델은 `claude-opus-4-8`
 //!   (프로젝트 전체 기본 프로바이더는 OpenAI/ChatGPT 5.5 — 설정의 default_provider 참고).
 //! - 스트림 이벤트 → 코어 이벤트 매핑:
-//!     `content_block_delta`(text_delta)     → TextDelta
-//!     `content_block_delta`(thinking_delta) → ThinkingDelta
-//!     `content_block_start`(tool_use)       → ToolUseStart
-//!     `content_block_delta`(input_json_delta) → ToolUseInputDelta
-//!     `content_block_stop`                  → ContentBlockStop
-//!     `message_delta`(stop_reason,usage) / `message_stop` → MessageStop
+//!
+//!   ```text
+//!   content_block_delta(text_delta)       → TextDelta
+//!   content_block_delta(thinking_delta)   → ThinkingDelta
+//!   content_block_start(tool_use)         → ToolUseStart
+//!   content_block_delta(input_json_delta) → ToolUseInputDelta
+//!   content_block_stop                    → ContentBlockStop
+//!   message_delta(stop_reason,usage) / message_stop → MessageStop
+//!   ```
 
 use async_trait::async_trait;
 
@@ -67,7 +70,8 @@ impl AnthropicProvider {
             body["system"] = serde_json::json!(system);
         }
         if let Some(effort) = req.effort {
-            body["output_config"] = serde_json::json!({ "effort": format!("{effort:?}").to_lowercase() });
+            body["output_config"] =
+                serde_json::json!({ "effort": format!("{effort:?}").to_lowercase() });
         }
         // TODO: req.messages → Anthropic content 블록, req.tools → tools[] 변환.
         body
@@ -86,7 +90,13 @@ impl Provider for AnthropicProvider {
 
     async fn stream(&self, request: CompletionRequest) -> Result<EventStream> {
         let _wire = self.to_wire(&request);
-        let _ = (&self.api_key, &self.base_url, &self.http, &self.model, ANTHROPIC_VERSION);
+        let _ = (
+            &self.api_key,
+            &self.base_url,
+            &self.http,
+            &self.model,
+            ANTHROPIC_VERSION,
+        );
 
         // 실제 구현 골격:
         //   let resp = self.http.post(format!("{}/v1/messages", self.base_url))
