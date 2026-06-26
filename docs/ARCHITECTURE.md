@@ -290,9 +290,12 @@ OpenAI — 구조가 달라 어댑터가 재배치:
   승인 대상이 아니다).
 - **fail-closed**: 루프는 `Allow` 일 때만 도구를 실행한다. `read`/`glob`/`grep`(부작용
   없음)은 `Allow` 라 게이트 없이 바로 실행하고, `Ask` 도구는 게이트가 동의를 받아 `Allow`
-  를 돌려줘야 실행된다. **대화형 승인 경로가 아직 없으므로(ROADMAP 2a 미구현) 현재 `Ask`
-  도구를 호출하면 그 턴은 `Error::PermissionDenied` 로 중단된다** — 안전하지만 실제로
-  쓰려면 2a 의 승인 모달이 필요하다. `write`/`bash` 가 승인 없이 무단 실행되는 일은 없다.
+  를 돌려줘야 실행된다. **TUI(인터랙티브) 모드**에선 `scv-tui` 의 대화형 게이트
+  (`InteractivePermissionGate`)가 모달로 사용자 승인을 받아 `Allow`/`Deny` 를 돌려준다 —
+  설정 `[permissions]` 가 `allow`/`deny` 로 확정하면 묻지 않고, `ask` 면 모달을 띄운다(§4.5).
+  **원샷(비-TUI) 모드**엔 대화형 경로가 없어 `Ask` 도구를 호출하면 그 턴은
+  `Error::PermissionDenied` 로 중단된다(설정에서 명시적 `allow` 를 준 도구만 실행). 어느
+  경로에서도 `write`/`bash` 가 승인 없이 무단 실행되는 일은 없다.
 - **보안**: 모든 경로 입력은 `ToolContext.workdir` 안으로 제한(경로 탈출/심볼릭
   링크 방지). bash 명령은 모델이 만든 신뢰 불가 출력으로 취급한다.
 - **취소 협조**: 장시간 실행 도구(`bash` 등)는 `ToolContext.cancel` 을 주기적으로
