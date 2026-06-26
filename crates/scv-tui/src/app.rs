@@ -28,6 +28,7 @@ use scv_core::agent::Agent;
 use scv_core::message::{AgentEvent, StreamEvent};
 use scv_core::provider::Provider;
 use scv_core::session::{Session, SessionStore};
+use scv_core::skill::SkillRegistry;
 use scv_core::tool::{CancellationToken, PermissionLevel};
 
 /// 합성 루트(scv-cli)가 주입하는 "프로바이더 빌드 팩토리". 프로바이더 id 를 받아 그
@@ -40,6 +41,9 @@ use crate::permission::{InteractivePermissionGate, PermissionRequest};
 use crate::phase::{Phase, SpinnerStyle};
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
+
+/// PageUp/PageDown 한 번에 스크롤하는 줄 수.
+const SCROLL_STEP: u16 = 5;
 
 /// crossterm/ratatui IO 오류를 core 에러로 감싼다(라이브러리 경계, CODING_RULES §2).
 fn map_io(context: &str, source: io::Error) -> scv_core::Error {
@@ -78,6 +82,10 @@ pub(crate) enum Key {
     Interrupt,
     /// Esc.
     Cancel,
+    /// PageUp — 대화 로그를 위로 스크롤(이전 대화 보기).
+    ScrollUp,
+    /// PageDown — 아래로 스크롤(하단 추적 복귀).
+    ScrollDown,
     Ignore,
 }
 
@@ -86,6 +94,8 @@ pub(crate) fn decode_key(key: KeyEvent) -> Key {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('c') if ctrl => Key::Interrupt,
+        KeyCode::PageUp => Key::ScrollUp,
+        KeyCode::PageDown => Key::ScrollDown,
         KeyCode::Char(c) if !ctrl => Key::Insert(c),
         KeyCode::Enter => Key::Submit,
         KeyCode::Backspace => Key::Backspace,
@@ -103,9 +113,11 @@ pub(crate) enum Command {
     Model(String),
     /// 사용 가능한 프로바이더 목록.
     Providers,
+    /// 사용 가능한 스킬 목록.
+    Skills,
     /// 도움말.
     Help,
-    /// 알 수 없는/인자 빠진 명령.
+    /// 알 수 없는 명령 — 스킬 이름일 수 있어(`/<skill>`) 루프에서 한 번 더 확인한다.
     Unknown(String),
 }
 
@@ -119,6 +131,7 @@ pub(crate) fn parse_command(line: &str) -> Option<Command> {
         ("provider" | "p", a) if !a.is_empty() => Command::Provider(a.to_string()),
         ("model" | "m", a) if !a.is_empty() => Command::Model(a.to_string()),
         ("providers", _) => Command::Providers,
+        ("skills", _) => Command::Skills,
         ("help" | "h" | "?", _) => Command::Help,
         (other, _) => Command::Unknown(other.to_string()),
     })
@@ -159,6 +172,8 @@ pub struct App {
     hint: String,
     /// 현재 프로바이더·모델 라벨(입력창 제목에 표시). `/provider`·`/model` 로 갱신.
     model_label: String,
+    /// 대화 로그를 하단에서 위로 끌어올린 줄 수(0 = 하단 추적). PageUp/Down 으로 조절.
+    scroll_lines: u16,
 }
 
 impl std::fmt::Debug for App {
@@ -186,6 +201,7 @@ impl App {
             quit_armed: false,
             hint: String::new(),
             model_label: String::new(),
+            scroll_lines: 0,
         }
     }
 
@@ -198,6 +214,7 @@ impl App {
         store: &dyn SessionStore,
         providers: &[String],
         make_provider: &MakeProvider<'_>,
+        skills: &SkillRegistry,
     ) -> scv_core::Result<()> {
         self.model_label = format!("{}·{}", agent.provider.id(), agent.model);
         let guard = RawModeGuard::enter().map_err(|e| map_io("enter raw mode", e))?;
@@ -227,21 +244,39 @@ impl App {
                 Prompt::Submit(p) => p,
                 Prompt::Quit => break,
             };
-            if prompt.trim().is_empty() {
+            let raw = prompt;
+            if raw.trim().is_empty() {
                 continue;
             }
-            // 슬래시 명령은 모델 턴 대신 즉시 처리(프로바이더/모델 전환 등).
-            if let Some(cmd) = parse_command(&prompt) {
-                self.transcript.push(format!("› {prompt}"));
-                self.handle_command(cmd, &mut agent, providers, make_provider);
-                self.render(&mut terminal)?;
-                continue;
-            }
-            self.transcript.push(format!("› {prompt}"));
+            // 입력 분류 → 이번 턴에 모델로 보낼 prompt 결정.
+            //  - 슬래시 명령(/provider, /model, /providers, /skills, /help): 즉시 처리 후 continue.
+            //  - `/<스킬이름>`: 그 스킬 본문을 지시로 주입해 이번 턴 실행(progressive disclosure 발동).
+            //  - 그 외: 일반 프롬프트.
+            let prompt: String = if let Some(cmd) = parse_command(&raw) {
+                match cmd {
+                    Command::Unknown(ref name) if skills.get(name).is_some() => {
+                        let skill = skills.get(name).expect("just checked");
+                        self.transcript.push(format!("› {raw}"));
+                        self.transcript.push(format!("[skill: {name}]"));
+                        let body = skill.body.clone().unwrap_or_default();
+                        format!("\"{name}\" 스킬의 절차를 따라 진행한다:\n\n{body}")
+                    }
+                    other => {
+                        self.transcript.push(format!("› {raw}"));
+                        self.handle_command(other, &mut agent, providers, make_provider, skills);
+                        self.render(&mut terminal)?;
+                        continue;
+                    }
+                }
+            } else {
+                self.transcript.push(format!("› {raw}"));
+                raw
+            };
 
             // ── RUNNING: 턴 구동 ──
             let token = CancellationToken::new();
             agent.tool_ctx.cancel = token.clone();
+            self.scroll_lines = 0; // 새 턴이면 하단 추적으로 복귀.
             self.phase = Phase::Waiting;
             self.live.clear();
             self.live_thinking.clear();
@@ -378,11 +413,20 @@ impl App {
                 self.quit_armed = false;
                 None
             }
+            Key::ScrollUp => {
+                self.scroll_lines = self.scroll_lines.saturating_add(SCROLL_STEP);
+                None
+            }
+            Key::ScrollDown => {
+                self.scroll_lines = self.scroll_lines.saturating_sub(SCROLL_STEP);
+                None
+            }
             Key::Ignore => None,
         }
     }
 
     /// 턴 진행 중 키 처리. 모달이 있으면 y/n 으로 승인 결정, 없으면 Ctrl-C 로 턴 취소.
+    /// 스크롤은 진행 중에도 가능.
     fn handle_running_key(&mut self, key: KeyEvent, token: &CancellationToken) {
         let decoded = decode_key(key);
         if self.modal.is_some() {
@@ -397,9 +441,14 @@ impl App {
             }
             return;
         }
-        if decoded == Key::Interrupt {
-            token.cancel();
-            self.hint = "interrupting…".into();
+        match decoded {
+            Key::ScrollUp => self.scroll_lines = self.scroll_lines.saturating_add(SCROLL_STEP),
+            Key::ScrollDown => self.scroll_lines = self.scroll_lines.saturating_sub(SCROLL_STEP),
+            Key::Interrupt => {
+                token.cancel();
+                self.hint = "interrupting…".into();
+            }
+            _ => {}
         }
     }
 
@@ -449,6 +498,7 @@ impl App {
         agent: &mut Agent,
         providers: &[String],
         make_provider: &MakeProvider<'_>,
+        skills: &SkillRegistry,
     ) {
         match cmd {
             Command::Provider(id) => match make_provider(&id) {
@@ -471,12 +521,19 @@ impl App {
                 self.transcript
                     .push(format!("[providers: {}]", providers.join(", ")));
             }
-            Command::Help => self
-                .transcript
-                .push("[commands: /provider <id>, /model <id>, /providers, /help]".to_string()),
+            Command::Skills => {
+                let names: Vec<&str> = skills.summaries().map(|m| m.name.as_str()).collect();
+                self.transcript
+                    .push(format!("[skills: {} — run with /<name>]", names.join(", ")));
+            }
+            Command::Help => self.transcript.push(
+                "[commands: /provider <id>, /model <id>, /providers, /skills, /<skill>, /help \
+                 · PageUp/PageDown scroll]"
+                    .to_string(),
+            ),
             Command::Unknown(c) => self
                 .transcript
-                .push(format!("[unknown command: /{c} — try /help]")),
+                .push(format!("[unknown: /{c} — try /help or /skills]")),
         }
     }
 
@@ -541,9 +598,11 @@ impl App {
         }
 
         let para = Paragraph::new(lines).wrap(Wrap { trim: false });
-        // 줄바꿈(wrap)까지 고려한 실제 행 수로 스크롤해 항상 마지막(최신 응답)이 보이게 한다.
+        // 줄바꿈(wrap)까지 고려한 실제 행 수로 스크롤한다. 기본은 하단(최신 응답)이고,
+        // scroll_lines 만큼 위로 끌어올려 이전 대화를 본다(PageUp/Down). 끝값은 클램프.
         let total = para.line_count(inner.width) as u16;
-        let scroll = total.saturating_sub(inner.height);
+        let bottom = total.saturating_sub(inner.height);
+        let scroll = bottom.saturating_sub(self.scroll_lines.min(bottom));
         f.render_widget(para.block(block).scroll((scroll, 0)), area);
     }
 
@@ -706,6 +765,22 @@ mod tests {
     }
 
     #[test]
+    fn pageup_pagedown_scroll_transcript() {
+        let mut app = App::new(SpinnerStyle::Ascii);
+        assert_eq!(app.scroll_lines, 0);
+        app.handle_idle_key(key(KeyCode::PageUp));
+        assert_eq!(app.scroll_lines, SCROLL_STEP);
+        app.handle_idle_key(key(KeyCode::PageUp));
+        assert_eq!(app.scroll_lines, SCROLL_STEP * 2);
+        app.handle_idle_key(key(KeyCode::PageDown));
+        assert_eq!(app.scroll_lines, SCROLL_STEP);
+        // 하단 초과로 내려도 0 에서 멈춘다(saturating).
+        app.handle_idle_key(key(KeyCode::PageDown));
+        app.handle_idle_key(key(KeyCode::PageDown));
+        assert_eq!(app.scroll_lines, 0);
+    }
+
+    #[test]
     fn idle_double_ctrl_c_quits() {
         let mut app = App::new(SpinnerStyle::Ascii);
         // 1차: 종료 안내만, 종료 아님.
@@ -842,7 +917,13 @@ mod tests {
             Some(Command::Model("qwen3.5:9b".into()))
         );
         assert_eq!(parse_command("/providers"), Some(Command::Providers));
+        assert_eq!(parse_command("/skills"), Some(Command::Skills));
         assert_eq!(parse_command("/help"), Some(Command::Help));
+        // 스킬 호출(`/compact` 등)은 파서 단계에선 Unknown → 루프가 스킬 레지스트리로 확인.
+        assert_eq!(
+            parse_command("/compact"),
+            Some(Command::Unknown("compact".into()))
+        );
         // 인자 빠진 provider/model → Unknown(=help 유도).
         assert_eq!(
             parse_command("/provider"),
@@ -920,19 +1001,38 @@ mod tests {
                 other => Err(scv_core::Error::Provider(format!("no {other}"))),
             }
         };
+        let skills = SkillRegistry::new();
         // /provider openai → provider·model 교체.
-        app.handle_command(Command::Provider("openai".into()), &mut agent, &[], &make);
+        app.handle_command(
+            Command::Provider("openai".into()),
+            &mut agent,
+            &[],
+            &make,
+            &skills,
+        );
         assert_eq!(agent.provider.id(), "openai");
         assert_eq!(agent.model, "gpt-5.5");
         assert_eq!(app.model_label, "openai·gpt-5.5");
 
         // /model 교체(프로바이더 유지).
-        app.handle_command(Command::Model("o4-mini".into()), &mut agent, &[], &make);
+        app.handle_command(
+            Command::Model("gpt-5.4-mini".into()),
+            &mut agent,
+            &[],
+            &make,
+            &skills,
+        );
         assert_eq!(agent.provider.id(), "openai");
-        assert_eq!(agent.model, "o4-mini");
+        assert_eq!(agent.model, "gpt-5.4-mini");
 
         // 알 수 없는 프로바이더 → 실패 메시지, 상태 불변.
-        app.handle_command(Command::Provider("nope".into()), &mut agent, &[], &make);
+        app.handle_command(
+            Command::Provider("nope".into()),
+            &mut agent,
+            &[],
+            &make,
+            &skills,
+        );
         assert_eq!(agent.provider.id(), "openai"); // 그대로
         assert!(app.transcript.iter().any(|l| l.contains("switch failed")));
     }

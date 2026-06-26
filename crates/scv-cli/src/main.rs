@@ -233,9 +233,16 @@ async fn main() -> anyhow::Result<()> {
 
             let spinner = scv_tui::SpinnerStyle::from_config(&config.ui.spinner);
             let mut app = scv_tui::App::new(spinner);
-            app.run(agent, session, &store, &provider_ids, &make_provider)
-                .await
-                .context("TUI 실행 실패")?;
+            app.run(
+                agent,
+                session,
+                &store,
+                &provider_ids,
+                &make_provider,
+                &skills,
+            )
+            .await
+            .context("TUI 실행 실패")?;
         }
     }
 
