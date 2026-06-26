@@ -158,7 +158,7 @@ impl App {
         mut session: Session,
         store: &dyn SessionStore,
     ) -> scv_core::Result<()> {
-        let _guard = RawModeGuard::enter().map_err(|e| map_io("enter raw mode", e))?;
+        let guard = RawModeGuard::enter().map_err(|e| map_io("enter raw mode", e))?;
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend).map_err(|e| map_io("init terminal", e))?;
         let mut input = EventStream::new();
@@ -260,6 +260,16 @@ impl App {
             self.render(&mut terminal)?;
         }
 
+        // 터미널을 복원(대체화면 나가기·raw 해제)한 뒤 일반 화면에 세션 id 를 알린다 →
+        // `scv --resume <id>` 로 이어갈 수 있다. 턴이 한 번도 없었으면(저장 안 됨) 생략.
+        drop(terminal);
+        drop(guard);
+        if !session.messages.is_empty() {
+            println!(
+                "[session {id}]  (resume: scv --resume {id})",
+                id = session.id.0
+            );
+        }
         Ok(())
     }
 
