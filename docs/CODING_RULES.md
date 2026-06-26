@@ -155,7 +155,7 @@
 
 ## 9. LLM 연동 규칙 (프로젝트 특화)
 
-기본 프로바이더는 **OpenAI(ChatGPT 5.5, `gpt-5.5`)**, Anthropic 은 대체다. 아래
+기본 프로바이더는 **로컬 Ollama(`qwen3.5:9b`)**, OpenAI(`gpt-5.5`)·Anthropic 은 클라우드 대체다. 아래
 **공통** 규칙은 모든 어댑터에, **어댑터별** 항목은 해당 프로바이더에만 적용한다.
 위반하면 런타임 400/오작동.
 
@@ -164,7 +164,7 @@
 - **스트리밍이 기본**: 긴 출력/큰 `max_tokens` 에서 HTTP 타임아웃을 피하려면
   스트리밍이 필수다. TUI 실시간 출력에도 필요하다. `Provider::stream` 만 둔 이유.
 - **모델 ID 는 설정에서 주입**, 코드에 하드코딩하지 않는다(어댑터 기본값 1개만 허용).
-  기본 모델 `gpt-5.5`. 날짜/임의 접미사를 붙이지 않는다.
+  기본 모델 `qwen3.5:9b`(로컬 Ollama). 날짜/임의 접미사를 붙이지 않는다.
 - **`max_tokens`**: 스트리밍 시 64000 권장, 비스트리밍 16000. 분류 등 짧은 출력만
   더 낮춘다. 무작정 낮추면 출력이 중간에 잘린다.
 - **tool_use 입력은 JSON 파싱으로**: 직렬화된 문자열을 정규식/부분문자열로 매칭하지
@@ -175,13 +175,19 @@
 - **에러가 HTTP 200 으로 오는 경우가 있다**: 서버측 거부/도구 결과 등. 상태코드만
   믿지 말고 종료 사유/결과 블록을 분기한다.
 
-### OpenAI 어댑터 (기본)
+### OpenAI / OpenAI-호환 어댑터 (기본 경로)
 
-- 인증 `Authorization: Bearer {OPENAI_API_KEY}`, 엔드포인트 `/chat/completions`.
+기본 프로바이더(로컬 Ollama)가 이 어댑터를 재사용한다. `kind` 로 세 변형:
+`openai`(표준 클라우드) · `openai-compat`(OpenAI-호환 게이트웨이) · `ollama`(로컬, `base_url`
+기본 `localhost:11434/v1`). 호환 변형(`openai-compat`/`ollama`)은 추론 전용 파라미터
+(`reasoning_effort`)·`stream_options` 를 보내지 않는다(로컬/게이트웨이가 400 을 내므로).
+
+- 인증 `Authorization: Bearer {api_key}`, 엔드포인트 `/chat/completions`. (Ollama 는 키를
+  무시하지만 헤더는 그대로 — `OLLAMA_API_KEY` 에 아무 값이나 둔다.)
 - SSE delta(`choices[].delta`)와 `tool_calls` 를 코어의 `StreamEvent`/`ContentBlock`
   로 매핑한다. content 는 문자열, tool_calls 는 별도 배열 구조라는 차이를 흡수한다.
-- 사고/추론 깊이는 **OpenAI 자체 파라미터**(reasoning effort 등)를 쓴다. Anthropic
-  의 `thinking` 파라미터를 보내지 않는다.
+- 사고/추론 깊이는 **OpenAI 자체 파라미터**(reasoning effort 등)를 쓴다(호환 변형은 생략).
+  Anthropic 의 `thinking` 파라미터를 보내지 않는다.
 
 ### Anthropic 어댑터 (대체)
 
@@ -192,14 +198,59 @@
 
 ## 10. 테스트
 
-- 단위 테스트는 모듈 내 `#[cfg(test)] mod tests`. 순수 로직(프롬프트 합성, frontmatter
-  파싱, 권한 결정, 와이어 변환)은 반드시 단위 테스트한다.
-- 외부 의존(LLM/네트워크)은 trait 을 mock 구현해 테스트한다(`Provider`/`Tool` 가
+### 10.1 티어 (위치/파일명 컨벤션)
+
+커버리지 게이트가 티어를 구분하므로 **위치와 파일명 규칙**을 지킨다.
+
+| 티어 | 위치 | 무엇을 | 라인 커버리지 |
+|------|------|--------|:---:|
+| **unit** | `src/` 내 `#[cfg(test)] mod tests` | 순수 로직(프롬프트 합성, frontmatter 파싱, 권한 결정, 와이어 변환)은 **반드시** 단위 테스트 | **≥ 95%** |
+| **integration** | `crates/*/tests/*.rs` (단 `e2e_*.rs` 제외) | 한 크레이트/서브시스템 경계를 fake 로 검증 | **≥ 90%** |
+| **e2e (종단)** | `crates/*/tests/e2e_*.rs` | 에이전트 루프를 fake `Provider`(미리 정해둔 이벤트 스트림)로 한 턴 끝까지 구동 | **≥ 85%** |
+
+- `tests/` 의 **최상위 `.rs` 파일만** cargo 통합 테스트 타깃이다(하위 디렉터리는 공용
+  헬퍼 모듈). 그래서 e2e 는 파일명 접두사 `e2e_` 로 가른다 — 예: `tests/e2e_agent_loop.rs`.
+- 외부 의존(LLM/네트워크)은 trait 을 mock/fake 로 구현해 테스트한다(`Provider`/`Tool` 가
   trait 인 이유 중 하나). 실제 API 를 때리는 테스트는 `#[ignore]` + 환경변수 게이트.
-- 통합 테스트는 `tests/`. 에이전트 루프는 fake `Provider`(미리 정해둔 이벤트 스트림을
-  내는)로 종단 테스트한다.
+- **실제 로컬 모델 라이브 검증**: fake/mock(결정적 자동 게이트)과 **별개로** 실제 모델
+  (Ollama 기본 모델 `qwen3.5:9b` 등)로 종단 확인하려면 `tests/*_live.rs`(`#[ignore]` +
+  `SCV_E2E_OLLAMA` 게이트, 예 `scv-providers/tests/ollama_live.rs`)로 둔다. 파일명 `*_live`
+  는 `e2e_` 접두사를 피해 **커버리지 e2e 티어를 왜곡하지 않는다**(ignore 라 자동 측정에서
+  안 돈다). 결정적 fake/mock 테스트(fake provider e2e·mock SSE 통합)는 CI·커버리지용으로
+  **유지한다** — 라이브 테스트는 그 위의 수동/옵트인 보완이지 대체가 아니다(없애면 모델
+  없이 회귀를 못 잡고 커버리지 게이트가 무너진다).
 - 테스트에서는 `unwrap()`/`expect()` 허용(실패가 곧 테스트 실패).
 - 새 기능/버그 수정에는 회귀 테스트를 동반한다.
+
+### 10.2 커버리지 게이트 (반드시 통과)
+
+티어별 라인 커버리지가 위 임계 미만이면 **실패(blocking)** 다. 측정은 `cargo-llvm-cov`,
+실행은 단일 진입점 `scripts/coverage.sh`(티어별로 `clean → 해당 테스트만 --no-report
+누적 → report --fail-under-lines`).
+
+**각 티어는 자신이 실제로 실행하는 크레이트만 책임진다** — 측정 시 그 외 크레이트의
+`src` 는 분모에서 뺀다(unit = 전체 lib/bin, integration = 통합 테스트가 속한 크레이트,
+e2e = 종단 테스트가 속한 크레이트). 이렇게 하지 않으면 "e2e 가 거치지 않는 providers HTTP
+경로가 e2e 분모에 남아 영구 미달" 같은 왜곡이 생긴다. 책임 범위 산정과 제외는
+`scripts/coverage.sh` 가 `--ignore-filename-regex` 로 처리한다.
+
+```bash
+scripts/coverage.sh                 # unit≥95 · integration≥90 · e2e≥85, 미달 시 비-0 종료
+SCV_COV_UNIT=80 scripts/coverage.sh # 임계 임시 조정(SCV_COV_INTEGRATION/SCV_COV_E2E 도 동일)
+```
+
+- 전제: `cargo install cargo-llvm-cov --locked` + 컴포넌트 `llvm-tools`
+  (`rust-toolchain.toml` 에 고정 — rustup 이 자동 설치). 미설치면 게이트는 종료코드 2.
+- 임계를 영구히 바꾸려면 이 표(SSOT)를 고치고 같은 PR 에 반영한다. 스크립트 기본값은
+  이 표를 따른다.
+- 측정 도중 **티어에 테스트 타깃이 하나도 없으면 그 티어는 미충족으로 실패**한다
+  (예: 통합 테스트가 아직 없으면 integration 게이트는 추가 전까지 실패).
+- **측정 제외(분모에서 뺌)**: 테스트로 **실행 자체가 불가능**하거나 **아직 구현 전**인
+  경로는 `--ignore-filename-regex` 로 제외한다(`scripts/coverage.sh` 의 `EXCLUDE_RE`):
+  `scv-cli/src/main.rs`(부트스트랩/조립), `scv-tui/src/`(인터랙티브 raw-mode 루프),
+  `scv-providers/src/anthropic.rs`(Phase 4 미구현 스텁). 이들은 단위/통합/e2e 어느
+  티어로도 운동시킬 수 없어 분모에 남으면 게이트를 영구 왜곡한다. 구현·테스트가
+  가능해지면 그 시점에 제외에서 빼 커버리지로 강제한다(예: Anthropic 어댑터는 4a 에서).
 
 ## 11. 의존성 관리
 

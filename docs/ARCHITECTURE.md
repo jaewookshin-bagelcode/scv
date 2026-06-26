@@ -20,8 +20,8 @@
 
 추가 설계 결정:
 - **언어/런타임**: Rust + Tokio(async)
-- **LLM 연동**: 멀티 프로바이더 추상. **기본은 OpenAI(ChatGPT 5.5, `gpt-5.5`)**,
-  Anthropic 은 `--provider anthropic` 으로 전환 가능
+- **LLM 연동**: 멀티 프로바이더 추상. **기본은 로컬(Ollama, `qwen3.5:9b`)** — 무료·오프라인,
+  OpenAI(`gpt-5.5`)·Anthropic 은 `--provider openai|anthropic` 으로 전환 가능
 - **인터페이스**: 인터랙티브 CLI/TUI(원샷 모드도 지원)
 
 ## 2. 핵심 개념 — Agentic Loop
@@ -108,14 +108,16 @@ flowchart BT
     subgraph core["scv-core — 중립 모델 + Provider trait"]
         M["Message / ContentBlock / StreamEvent / CompletionRequest"]
     end
-    O["OpenAiProvider (기본)<br/>POST /chat/completions (SSE)<br/>Authorization: Bearer"]
+    O["OpenAiProvider<br/>기본=로컬 Ollama(localhost:11434) · OpenAI 클라우드<br/>POST /chat/completions (SSE)"]
     A["AnthropicProvider<br/>POST /v1/messages (SSE)<br/>x-api-key, anthropic-version"]
     O -- implements --> core
     A -- implements --> core
 ```
 
-> **기본 프로바이더는 OpenAI(ChatGPT 5.5, 모델 id `gpt-5.5`)** 다. Anthropic 은
-> `--provider anthropic` 으로 전환해 쓰는 대체 프로바이더다.
+> **기본 프로바이더는 로컬 Ollama(모델 `qwen3.5:9b`)** 다 — OpenAI-호환 어댑터를 재사용하며
+> (`kind="ollama"`, `base_url` 자동 `localhost:11434/v1`, 추론 파라미터 미전송) 오프라인으로 돈다.
+> OpenAI(ChatGPT 5.5 `gpt-5.5`)·Anthropic 은 `--provider openai|anthropic` 으로 전환해 쓰는
+> 클라우드 대체 프로바이더다.
 >
 > 두 프로바이더 모두 공식 Rust SDK 가 없어 `reqwest` + `eventsource-stream` 으로
 > 직접 호출한다. 사고/효과·인증 헤더 등 프로바이더별 차이는 각 어댑터가 흡수한다
@@ -129,6 +131,27 @@ flowchart BT
 
 새 프로바이더 추가 = `Provider` 한 개 구현 + `scv_providers::build` 에 `kind` 분기
 한 줄. 코어·도구·TUI 는 손대지 않는다.
+
+**인증 경로(API 키 / 구독 OAuth).** 현재 어댑터는 **API 키**(OpenAI `Bearer`,
+Anthropic `x-api-key`)를 환경변수에서 읽는다. ChatGPT/Codex **구독 OAuth**(플랫폼 API
+키 없이)를 쓰려는 경우의 선택지와 적합도:
+
+1. **OpenAI-호환 게이트웨이/프록시** — 게이트웨이가 `/chat/completions` 를 노출하면
+   `base_url` 만 가리키면 된다. **어댑터 변경 0, 자체 루프·도구·권한 그대로 유지**. ★권장.
+2. **OAuth access token → OpenAI 백엔드 직접(Responses API 어댑터)** — 자체 루프는
+   유지하나 엔드포인트/형식이 비공식·비공개라 불안정하고, Codex 전용 토큰 재사용은 ToS
+   회색지대. 새 `kind` + 어댑터 필요.
+3. **Codex app-server(JSON-RPC `thread/turn`)** — app-server 는 *모델*이 아니라 *완성된
+   에이전트*라, scv 가 호출하면 **Codex 가 자체 도구·승인·루프를 돌린다** → scv 의
+   `run_turn`/`ToolRegistry`/`PermissionGate` 가 무력화돼 scv 가 "Codex 래퍼"가 된다.
+   자체 코딩 에이전트라는 정체성과 충돌하므로 **기본 채택하지 않는다** — 다만 구독(ChatGPT/
+   Codex) OAuth 를 공식 경로로 쓰는 유일한 길이라 **향후 옵션(TODO)** 으로 남긴다
+   (ROADMAP §4f; OpenClaw 의 하이브리드 — native 도구는 Codex, dynamic 도구는 `item/tool/call`
+   로 scv 회수 + per-agent `CODEX_HOME` 격리 — 패턴 참고).
+
+즉 scv 는 "모델 토큰 스트림"을 받아 자체 루프를 돌리는 게 핵심이라 1 > 2 ≫ 3. **기존 OpenAI
+API 키 어댑터(`/chat/completions` + Bearer)는 기본 경로로 유지**하고(삭제하지 않음), 인증은
+키/게이트웨이를 1차로 둔다. 인증 타입 일반화는 ROADMAP §4e, app-server 프록시(TODO)는 §4f.
 
 **같은 대화, 다른 와이어.** 코어가 든 중립 `messages`(§6)를 어댑터의 `to_wire` 가
 프로바이더 포맷으로 직렬화한다. 같은 한 줄(assistant 가 `read` 호출 → 그 결과)이 이렇게
@@ -179,10 +202,11 @@ OpenAI — 구조가 달라 어댑터가 재배치:
 않고 다른 에이전트 도구와 같은 파일(`AGENTS.md`)을 그대로 읽어** 호환된다 — 이미 다른
 도구용으로 세팅된 repo 가 scv 에서도 그냥 동작한다.
 
-- **탐색 체인**: repo 루트 `AGENTS.md` → 하위 디렉터리 `AGENTS.md`(디렉터리 스코프)
-  → 사용자 전역 `~/.config/scv/AGENTS.md` → 폴백 `CLAUDE.md`.
-- **병합**: 더 구체적인(하위/프로젝트) 것이 상위에 덧붙거나 덮는다. 충돌 시 더 가까운
-  것 우선.
+- **탐색 위치**: 사용자 전역 `~/.config/scv/AGENTS.md`(가장 일반적) · repo 루트
+  `AGENTS.md`(`.git` 경계로 탐지) · 루트~cwd 사이 하위 디렉터리 `AGENTS.md`(가장 구체적).
+  각 위치에서 `AGENTS.md` 가 없으면 같은 위치의 `CLAUDE.md` 로 폴백한다.
+- **병합**: 덜 구체적인 것 → 더 구체적인 것 순으로 이어 붙여, **가까운(더 구체적인) 것이
+  뒤에 와 우선**하게 한다(하위 > 루트 > 전역). 구현은 `scv-cli::project_context`.
 - **신규 이름 도입 안 함**(WORKER.md 등). 굳이 scv 고유 별칭이 필요하면 오버라이드로만
   인식하고 캐노니컬 출처는 `AGENTS.md` 로 둔다(생태계 파편화 방지).
 
@@ -259,10 +283,16 @@ OpenAI — 구조가 달라 어댑터가 재배치:
   - 위험 입력(workdir 밖 경로 등) → `Deny`
 - 게이팅은 `PermissionGate` trait 으로 분리: 정적 정책(`StaticPermissionGate`,
   설정 기반) + 대화형 프롬프트(TUI)를 합성한다.
-- **fail-closed**: 루프는 `Allow` 일 때만 도구를 실행한다. `read` 류 `Allow` 도구는
-  게이트를 거치지 않고 바로 실행하고, `Ask` 도구는 게이트가 동의를 받아 `Allow` 를
-  돌려줘야 실행된다 — 대화형 게이트가 없으면(`Ask` 가 그대로 남으면) 거부된다. 즉
-  `write`/`bash` 같은 비가역 도구가 권한 모달 없이 무단 실행되는 일은 없다.
+- **승인 전제(요구사항)**: 비가역(`Ask`) 도구(`write`/`edit`/`bash`)는 **사용자의 명시적
+  승인을 받은 뒤에만 실행된다.** 승인은 대화형 `PermissionGate` 가 `Ask` 를 `Allow` 로
+  바꿔 돌려주는 것으로 표현된다. 모델이 승인을 우회하거나 자동 거부로 "없는 셈 치고"
+  계속 진행하지 않는다 — **승인이 곧 사용 조건**이다(읽기 전용 도구는 부작용이 없어 이
+  승인 대상이 아니다).
+- **fail-closed**: 루프는 `Allow` 일 때만 도구를 실행한다. `read`/`glob`/`grep`(부작용
+  없음)은 `Allow` 라 게이트 없이 바로 실행하고, `Ask` 도구는 게이트가 동의를 받아 `Allow`
+  를 돌려줘야 실행된다. **대화형 승인 경로가 아직 없으므로(ROADMAP 2a 미구현) 현재 `Ask`
+  도구를 호출하면 그 턴은 `Error::PermissionDenied` 로 중단된다** — 안전하지만 실제로
+  쓰려면 2a 의 승인 모달이 필요하다. `write`/`bash` 가 승인 없이 무단 실행되는 일은 없다.
 - **보안**: 모든 경로 입력은 `ToolContext.workdir` 안으로 제한(경로 탈출/심볼릭
   링크 방지). bash 명령은 모델이 만든 신뢰 불가 출력으로 취급한다.
 - **취소 협조**: 장시간 실행 도구(`bash` 등)는 `ToolContext.cancel` 을 주기적으로

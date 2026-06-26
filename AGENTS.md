@@ -8,8 +8,8 @@
 `scv` = 터미널에서 도는 **멀티 프로바이더 코딩 에이전트**(Claude Code / Codex 류).
 Rust + Tokio. 시스템 프롬프트 · 세션 · 도구 · 스킬을 1급 기능으로 제공한다.
 
-- **기본 LLM 프로바이더: OpenAI(ChatGPT 5.5, 모델 id `gpt-5.5`)**.
-  Anthropic 은 `--provider anthropic` 으로 전환하는 대체 프로바이더.
+- **기본 LLM 프로바이더: 로컬(Ollama, 모델 `qwen3.5:9b`)** — 무료·오프라인.
+  OpenAI(ChatGPT 5.5 `gpt-5.5`) · Anthropic 은 `--provider openai|anthropic` 으로 전환하는 클라우드 대체.
 - 인터페이스: 인터랙티브 CLI/TUI(+ 원샷 모드).
 
 ## 워크스페이스 지도
@@ -20,7 +20,7 @@ Cargo 워크스페이스. **의존성은 항상 `scv-core` 를 향한다(순환 
 | 크레이트 | 책임 |
 |---------|------|
 | `crates/scv-core` | 도메인 모델 + trait(Provider/Tool/Skill/...) + **agentic loop**. 내부 의존 0 |
-| `crates/scv-providers` | `Provider` 구현 (openai 기본, anthropic 대체) |
+| `crates/scv-providers` | `Provider` 구현 (ollama 기본 — openai 어댑터 재사용, openai/anthropic 클라우드 대체) |
 | `crates/scv-tools` | `Tool` 구현(read/write/edit/bash/glob/grep) + 권한 정책 |
 | `crates/scv-skills` | `SKILL.md` 로더(progressive disclosure) |
 | `crates/scv-config` | 설정 로드/병합 |
@@ -57,13 +57,16 @@ Cargo 워크스페이스. **의존성은 항상 `scv-core` 를 향한다(순환 
 cargo fmt --all                                            # 포맷
 cargo clippy --all-targets --all-features -- -D warnings   # 린트(무경고)
 cargo test --workspace                                     # 테스트
+scripts/coverage.sh                                        # 커버리지 게이트(blocking, 티어별 임계)
 cargo check --workspace                                    # 빠른 타입 체크
 cargo run --bin scv -- "..."                               # 원샷 실행
 cargo run --bin scv                                        # 인터랙티브 TUI
 ```
 
-작업을 "완료"라고 말하기 전에 `fmt` + `clippy -D warnings` + `test` 를 통과시킨다.
-실패하면 출력과 함께 그대로 보고한다(통과한 척 금지).
+작업을 "완료"라고 말하기 전에 `fmt` + `clippy -D warnings` + `test` + `coverage.sh` 를
+통과시킨다. 커버리지 게이트는 테스트 티어별 라인 커버리지(unit/integration/e2e)를 강제하며
+임계의 SSOT 는 `docs/CODING_RULES.md` §10 이다. 실패하면 출력과 함께 그대로 보고한다
+(통과한 척 금지).
 
 ## 반드시 지키는 규칙 (요약 — 전문은 `docs/CODING_RULES.md`)
 
@@ -86,11 +89,13 @@ cargo run --bin scv                                        # 인터랙티브 TUI
 - **의존성**: 루트 `[workspace.dependencies]` 에서 단일 버전 관리, crate 는
   `dep.workspace = true` 로만 참조. `Cargo.lock` 은 커밋한다(애플리케이션).
 - **LLM 연동**(전문 `docs/CODING_RULES.md` §9):
-  - 스트리밍이 기본. 모델 id 는 설정에서 주입(하드코딩 금지), 기본 `gpt-5.5`.
+  - 스트리밍이 기본. 모델 id 는 설정에서 주입(하드코딩 금지), 기본 `qwen3.5:9b`(로컬 Ollama).
   - `tool_use.input` 은 JSON 파싱으로만(문자열 매칭 금지).
   - 병렬 도구 결과는 **하나의 user 메시지**에 모은다.
   - 종료 사유(stop/finish reason)를 먼저 확인 후 본문을 읽는다.
-  - OpenAI(기본): `Authorization: Bearer`, `/chat/completions`, 자체 reasoning 파라미터.
+  - 로컬 Ollama(기본): OpenAI-호환 어댑터 재사용(`kind="ollama"`), `base_url` 자동(`localhost:11434/v1`),
+    호환 모드(reasoning_effort·stream_options 미전송).
+  - OpenAI(클라우드 대체): `Authorization: Bearer`, `/chat/completions`, 자체 reasoning 파라미터.
   - Anthropic(대체): `x-api-key` + `anthropic-version`, `thinking:{type:"adaptive"}` +
     `output_config.effort`(`budget_tokens`/`temperature`/`top_p` 금지 — 400).
 
