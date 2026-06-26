@@ -5,19 +5,24 @@
 # (target/release/scv)를 가리키므로, 코드 수정 후 `cargo build --release` 만 다시 하면
 # 재설치 없이 링크가 최신 바이너리를 가리킨다.
 #
+# install 은 `skills/` 의 **기본 스킬**도 사용자 스킬 디렉터리로 복사한다(기존 것은 보존).
+#
 # 사용:
-#   sh scripts/scv-link.sh install     # release 빌드 + 링크 생성(기본)
-#   sh scripts/scv-link.sh uninstall   # 링크 제거
+#   sh scripts/scv-link.sh install     # release 빌드 + 링크 생성 + 기본 스킬 설치(기본)
+#   sh scripts/scv-link.sh uninstall   # 링크 제거(설치한 스킬은 사용자 데이터라 남긴다)
 #   sh scripts/scv-link.sh status      # 링크/PATH 상태
 #
 # bin 디렉터리 선택(우선순위): $SCV_BIN_DIR → PATH 에 있는 ~/.local/bin → PATH 에 있는
 #   ~/.cargo/bin → ~/.local/bin(없으면 PATH 추가 안내). 직접 지정: SCV_BIN_DIR=/path ...
+# 스킬 설치 위치: $SCV_SKILLS_DIR (기본 ~/.config/scv/skills).
 
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 TARGET="$REPO_ROOT/target/release/scv"
+SKILLS_SRC="$REPO_ROOT/skills"
+SKILLS_DEST="${SCV_SKILLS_DIR:-$HOME/.config/scv/skills}"
 
 # PATH 에 이미 있는 bin 디렉터리를 골라 "자동 호출"이 바로 되게 한다.
 pick_bin_dir() {
@@ -52,6 +57,23 @@ on_path() {
     esac
 }
 
+# 레포의 기본 스킬(skills/<name>/SKILL.md)을 사용자 스킬 디렉터리로 복사한다.
+# **기존 스킬은 덮어쓰지 않는다**(사용자 편집 보존). scv 가 `/<name>` 으로 발동한다.
+install_skills() {
+    [ -d "$SKILLS_SRC" ] || return 0
+    mkdir -p "$SKILLS_DEST"
+    for dir in "$SKILLS_SRC"/*/; do
+        [ -f "$dir/SKILL.md" ] || continue
+        name=$(basename "$dir")
+        if [ -e "$SKILLS_DEST/$name" ]; then
+            echo "[scv] skill '$name' already present — keeping yours"
+        else
+            cp -R "$dir" "$SKILLS_DEST/$name"
+            echo "[scv] installed skill: $name"
+        fi
+    done
+}
+
 cmd=${1:-install}
 case "$cmd" in
     install)
@@ -72,6 +94,8 @@ case "$cmd" in
             echo "[scv] WARNING: another 'scv' shadows the link: $resolved"
             echo "         remove it (e.g. 'cargo uninstall scv-cli' or rm) or reorder PATH."
         fi
+        # 기본 스킬 설치(기존 보존). TUI 에서 /skills 로 확인, /<name> 으로 발동.
+        install_skills
         ;;
     uninstall)
         if [ -L "$LINK" ]; then
@@ -96,6 +120,7 @@ case "$cmd" in
     *)
         echo "usage: sh scripts/scv-link.sh [install|uninstall|status]" >&2
         echo "  env: SCV_BIN_DIR (default: PATH 의 ~/.local/bin 또는 ~/.cargo/bin)" >&2
+        echo "       SCV_SKILLS_DIR (default: ~/.config/scv/skills)" >&2
         exit 2
         ;;
 esac

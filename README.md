@@ -177,6 +177,9 @@ SCV_AGENT__MAX_TOKENS=200 scv --no-tools "긴 얘기 해줘"
 
 - **발동(사용)**: TUI 에서 **`/<스킬이름>`** 으로 호출한다. 그 스킬의 본문 절차를 그 턴에
   주입해 모델이 따르게 한다. `/skills` 로 목록 확인.
+- **기본 스킬**: `sh scripts/scv-link.sh install` 이 레포의 `skills/`(현재 `commit`, `review`)을
+  전역 디렉터리로 설치한다 — **기존 같은 이름은 덮어쓰지 않는다**(편집 보존). 컴파일 내장이
+  아니라 **파일**이라 자유롭게 수정·삭제 가능.
 - **전역**: `~/.config/scv/skills/<name>/SKILL.md` — 모든 프로젝트에서 공통.
 - **프로젝트 로컬**: scv 를 연 폴더의 `./.scv/skills/<name>/SKILL.md` — 그 프로젝트에서만.
   같은 이름이면 프로젝트 로컬이 전역을 덮어쓴다.
