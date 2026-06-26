@@ -152,6 +152,13 @@ impl Agent {
                 return Ok(());
             }
 
+            // 방어: stop_reason 이 ToolUse 인데 실제 tool_use 블록이 없으면(모델/어댑터 이상)
+            // 빈 tool_result 를 무한히 되돌리며 MaxIterations 까지 도는 대신 턴을 종료한다.
+            if assistant.tool_uses().next().is_none() {
+                tracing::warn!("stop_reason=ToolUse 인데 tool_use 블록이 없어 턴을 종료한다");
+                return Ok(());
+            }
+
             // 협조적 취소 ③: 도구 실행 직전 체크포인트.
             if cancel.is_cancelled() {
                 observer.on_event(&AgentEvent::Interrupted).await;
@@ -775,5 +782,66 @@ mod exec_tests {
             .await
             .expect_err("deny should abort the turn");
         assert!(matches!(err, Error::PermissionDenied(t) if t == "danger"));
+    }
+
+    /// 고정 이벤트 시퀀스를 스트리밍하는 프로바이더.
+    struct ScriptProvider {
+        events: Vec<StreamEvent>,
+    }
+    #[async_trait]
+    impl Provider for ScriptProvider {
+        fn id(&self) -> &str {
+            "script"
+        }
+        fn models(&self) -> &[ModelInfo] {
+            &[]
+        }
+        async fn stream(&self, _request: CompletionRequest) -> Result<EventStream> {
+            let evs: Vec<Result<StreamEvent>> = self.events.iter().cloned().map(Ok).collect();
+            Ok(Box::pin(futures::stream::iter(evs)))
+        }
+        async fn count_tokens(
+            &self,
+            _s: Option<&str>,
+            _m: &[Message],
+            _t: &[ToolSchema],
+        ) -> Result<u64> {
+            Ok(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_use_stop_without_blocks_ends_turn_not_loop() {
+        // stop_reason=ToolUse 인데 tool_use 블록이 없는 비정상 응답 → 빈 결과 무한루프
+        // (MaxIterations)로 가지 않고 턴이 정상 종료(Ok)되어야 한다.
+        let provider = Arc::new(ScriptProvider {
+            events: vec![
+                StreamEvent::MessageStart { model: "m".into() },
+                StreamEvent::MessageStop {
+                    stop_reason: StopReason::ToolUse,
+                    usage: crate::message::Usage::default(),
+                },
+            ],
+        });
+        let agent = Agent {
+            provider,
+            tools: ToolRegistry::new(),
+            permissions: Arc::new(AllowGate),
+            context: Arc::new(NoopContextManager),
+            model: "m".into(),
+            system_prompt: String::new(),
+            max_tokens: 16,
+            effort: None,
+            max_tool_iterations: 5,
+            tool_ctx: ToolContext {
+                workdir: std::env::temp_dir(),
+                cancel: CancellationToken::new(),
+            },
+        };
+        let mut session = Session::new();
+        let r = agent
+            .run_turn(&mut session, "hi".into(), &NullObserver)
+            .await;
+        assert!(r.is_ok(), "expected Ok (turn ended), got {r:?}");
     }
 }
