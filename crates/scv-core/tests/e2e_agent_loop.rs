@@ -225,6 +225,57 @@ async fn tool_turn_executes_and_threads_result_then_finishes() {
     assert!(matches!(&final_assistant.content[0], ContentBlock::Text { text } if text == "done"));
 }
 
+#[tokio::test]
+async fn final_thinking_only_response_is_promoted_to_text() {
+    let agent = make_agent(vec![
+        vec![
+            StreamEvent::MessageStart {
+                model: "fake".into(),
+            },
+            StreamEvent::ToolUseStart {
+                id: "c1".into(),
+                name: "echo".into(),
+            },
+            StreamEvent::ToolUseInputDelta {
+                id: "c1".into(),
+                partial_json: "{}".into(),
+            },
+            StreamEvent::MessageStop {
+                stop_reason: StopReason::ToolUse,
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            StreamEvent::MessageStart {
+                model: "fake".into(),
+            },
+            StreamEvent::ThinkingDelta("final answer from compat reasoning".into()),
+            StreamEvent::MessageStop {
+                stop_reason: StopReason::EndTurn,
+                usage: Usage::default(),
+            },
+        ],
+    ]);
+
+    let mut session = scv_core::session::Session::new();
+    agent
+        .run_turn(&mut session, "use the tool".into(), &NullObserver)
+        .await
+        .expect("turn ok");
+
+    let final_assistant = &session.messages[3];
+    assert!(final_assistant
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Thinking { text, .. }
+            if text == "final answer from compat reasoning")));
+    assert!(final_assistant
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Text { text }
+            if text == "final answer from compat reasoning")));
+}
+
 /// 첫 `TextDelta` 를 낸 뒤 폴링되면 토큰을 끄고 `Pending` 을 반환하는 프로바이더 —
 /// 스트림 소비 **도중** 취소를 결정적으로 재현한다(타이밍 sleep 없이).
 struct CancelMidStreamProvider {

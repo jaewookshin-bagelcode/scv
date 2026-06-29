@@ -25,7 +25,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use scv_core::agent::Agent;
-use scv_core::message::{AgentEvent, StreamEvent};
+use scv_core::message::{AgentEvent, StopReason, StreamEvent};
 use scv_core::provider::Provider;
 use scv_core::session::{Session, SessionStore};
 use scv_core::skill::SkillRegistry;
@@ -333,7 +333,7 @@ impl App {
             }
             // 모달이 떠있던 채로 끝났다면(이론상 드묾) 정리 — 보낸 적 없으면 게이트가 fail-closed.
             self.modal = None;
-            self.flush_live();
+            self.flush_live(StopReason::EndTurn);
 
             match outcome {
                 Ok(()) => {}
@@ -493,7 +493,9 @@ impl App {
         match event {
             AgentEvent::Stream(StreamEvent::TextDelta(t)) => self.live.push_str(t),
             AgentEvent::Stream(StreamEvent::ThinkingDelta(t)) => self.live_thinking.push_str(t),
-            AgentEvent::Stream(StreamEvent::MessageStop { .. }) => self.flush_live(),
+            AgentEvent::Stream(StreamEvent::MessageStop { stop_reason, .. }) => {
+                self.flush_live(*stop_reason)
+            }
             AgentEvent::ToolStart { name } => self.transcript.push(format!("⚙ {name}")),
             AgentEvent::ToolEnd { name, is_error } if *is_error => {
                 self.transcript.push(format!("✗ {name} failed"))
@@ -553,14 +555,21 @@ impl App {
         }
     }
 
-    /// 누적된 스트리밍 텍스트를 transcript 로 옮긴다(빈 건 버림). 사고(thinking)는 휘발성이라
-    /// 보존하지 않고 비운다.
-    fn flush_live(&mut self) {
-        self.live_thinking.clear();
+    /// 누적된 스트리밍 텍스트를 transcript 로 옮긴다(빈 건 버림). 최종 응답이 thinking-only
+    /// 로 끝나는 호환 백엔드 응답만 fallback 으로 보여주고, tool-use 중간 사고는 비운다.
+    fn flush_live(&mut self, stop_reason: StopReason) {
+        let thinking = std::mem::take(&mut self.live_thinking);
         let text = std::mem::take(&mut self.live);
         let trimmed = text.trim_end();
         if !trimmed.is_empty() {
             self.transcript.push(trimmed.to_string());
+            return;
+        }
+        if stop_reason == StopReason::EndTurn {
+            let trimmed = thinking.trim_end();
+            if !trimmed.is_empty() {
+                self.transcript.push(trimmed.to_string());
+            }
         }
     }
 
@@ -860,6 +869,36 @@ mod tests {
         }));
         assert_eq!(app.live, "");
         assert_eq!(app.transcript.last().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn apply_event_flushes_final_thinking_only_response() {
+        use scv_core::message::{StopReason, Usage};
+        let mut app = App::new(SpinnerStyle::Ascii);
+        app.apply_event(&AgentEvent::Stream(StreamEvent::ThinkingDelta(
+            "compat final answer".into(),
+        )));
+        app.apply_event(&AgentEvent::Stream(StreamEvent::MessageStop {
+            stop_reason: StopReason::EndTurn,
+            usage: Usage::default(),
+        }));
+        assert_eq!(app.live_thinking, "");
+        assert_eq!(app.transcript.last().unwrap(), "compat final answer");
+    }
+
+    #[test]
+    fn apply_event_discards_thinking_before_tool_use_stop() {
+        use scv_core::message::{StopReason, Usage};
+        let mut app = App::new(SpinnerStyle::Ascii);
+        app.apply_event(&AgentEvent::Stream(StreamEvent::ThinkingDelta(
+            "tool plan".into(),
+        )));
+        app.apply_event(&AgentEvent::Stream(StreamEvent::MessageStop {
+            stop_reason: StopReason::ToolUse,
+            usage: Usage::default(),
+        }));
+        assert_eq!(app.live_thinking, "");
+        assert!(app.transcript.is_empty());
     }
 
     #[test]

@@ -138,8 +138,11 @@ impl Agent {
             };
 
             // 중단 시에도 모은 부분 텍스트를 세션에 보존한다(빈 메시지는 넣지 않음).
-            let assistant = Message::assistant(assembler.finish());
+            let mut assistant = Message::assistant(assembler.finish());
             if !assistant.content.is_empty() {
+                if !interrupted {
+                    promote_final_thinking_to_text(&mut assistant.content, stop_reason);
+                }
                 session.push(assistant.clone());
             }
             if interrupted {
@@ -444,6 +447,29 @@ fn parse_tool_input(name: &str, json: &str) -> serde_json::Value {
             serde_json::Value::Object(Default::default())
         }
     }
+}
+
+/// 일부 OpenAI-호환 백엔드(Ollama 등)는 도구 결과를 받은 뒤 최종 답을 `content`
+/// 대신 `reasoning` 으로만 흘리고 `EndTurn` 으로 끝낸다. 중간 tool-use 사고는 그대로
+/// 숨기되, 최종 응답이 thinking-only 이면 세션/컨텍스트에 사용자-visible text 로도 남긴다.
+fn promote_final_thinking_to_text(content: &mut Vec<ContentBlock>, stop_reason: StopReason) {
+    if stop_reason != StopReason::EndTurn {
+        return;
+    }
+    if content.iter().any(|block| match block {
+        ContentBlock::Text { text } => !text.trim().is_empty(),
+        ContentBlock::ToolUse { .. } => true,
+        _ => false,
+    }) {
+        return;
+    }
+    let Some(text) = content.iter().rev().find_map(|block| match block {
+        ContentBlock::Thinking { text, .. } if !text.trim().is_empty() => Some(text.clone()),
+        _ => None,
+    }) else {
+        return;
+    };
+    content.push(ContentBlock::Text { text });
 }
 
 #[cfg(test)]
