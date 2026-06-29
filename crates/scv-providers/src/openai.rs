@@ -844,4 +844,169 @@ mod tests {
         assert!(short > 0, "non-empty request should count > 0");
         assert!(long > short, "more text should estimate more tokens");
     }
+
+    #[test]
+    fn render_for_count_includes_thinking_and_tool_result() {
+        let msgs = vec![
+            Message::assistant(vec![ContentBlock::Thinking {
+                text: "ponder".into(),
+                signature: None,
+            }]),
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "c1".into(),
+                    content: "result body".into(),
+                    is_error: false,
+                }],
+            },
+        ];
+        let rendered = render_for_count(None, &msgs, &[]);
+        assert!(rendered.contains("ponder"));
+        assert!(rendered.contains("result body"));
+    }
+
+    #[test]
+    fn wire_maps_system_role_message() {
+        // Role::System 메시지(시스템 프롬프트와 별개) → role:"system" + collect_text.
+        let sysmsg = Message {
+            role: Role::System,
+            content: vec![
+                ContentBlock::Text {
+                    text: "line one".into(),
+                },
+                ContentBlock::Text {
+                    text: "line two".into(),
+                },
+            ],
+        };
+        let wire = to_wire(&req(vec![sysmsg, Message::user("hi")], vec![]), false);
+        let msgs = wire["messages"].as_array().unwrap();
+        // [system(프롬프트), system(역할 메시지), user]
+        assert_eq!(msgs[1]["role"], "system");
+        // collect_text 가 두 줄을 개행으로 합친다(append_line).
+        assert_eq!(msgs[1]["content"], "line one\nline two");
+    }
+
+    #[test]
+    fn wire_user_message_skips_thinking_and_tool_use() {
+        // user 콘텐츠에 thinking/tool_use 가 섞여 와도 무시되고 텍스트만 남는다.
+        let user = Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "real".into(),
+                },
+                ContentBlock::Thinking {
+                    text: "ignore".into(),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "x".into(),
+                    name: "y".into(),
+                    input: json!({}),
+                },
+            ],
+        };
+        let wire = to_wire(&req(vec![user], vec![]), false);
+        let msgs = wire["messages"].as_array().unwrap();
+        let u = msgs.iter().find(|m| m["role"] == "user").unwrap();
+        assert_eq!(u["content"], "real");
+    }
+
+    #[test]
+    fn wire_assistant_text_only_and_text_with_tools() {
+        // text 만 → content 가 그 텍스트, tool_calls 없음.
+        let text_only = Message::assistant(vec![ContentBlock::Text {
+            text: "just text".into(),
+        }]);
+        let w1 = to_wire(&req(vec![text_only], vec![]), false);
+        let a1 = w1["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(a1["role"], "assistant");
+        assert_eq!(a1["content"], "just text");
+        assert!(a1.get("tool_calls").is_none());
+
+        // text + tool_use(+무시되는 thinking/tool_result) → content 텍스트 유지 + tool_calls.
+        let mixed = Message::assistant(vec![
+            ContentBlock::Text {
+                text: "before".into(),
+            },
+            ContentBlock::Thinking {
+                text: "th".into(),
+                signature: None,
+            },
+            ContentBlock::ToolUse {
+                id: "c1".into(),
+                name: "read".into(),
+                input: json!({ "path": "a" }),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "z".into(),
+                content: "ignored".into(),
+                is_error: false,
+            },
+        ]);
+        let w2 = to_wire(&req(vec![mixed], vec![]), false);
+        let a2 = w2["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(a2["content"], "before");
+        assert_eq!(a2["tool_calls"][0]["function"]["name"], "read");
+    }
+
+    #[test]
+    fn decode_tool_call_before_start_is_dropped() {
+        // id 도 없고 index 매핑도 없는 tool_call 증분 → 조용히 드롭(빈 이벤트).
+        let mut d = ChunkDecoder::new();
+        let ev = decode_data(
+            &mut d,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":7,"function":{"arguments":"{}"}}]}}]}"#,
+        );
+        assert!(ev.is_empty(), "got: {ev:?}");
+    }
+
+    async fn drain(mut st: StreamState) -> Vec<Result<StreamEvent>> {
+        let mut out = Vec::new();
+        while let Some((ev, next)) = drive_stream(st).await {
+            out.push(ev);
+            st = next;
+        }
+        out
+    }
+
+    fn sse(
+        data: &str,
+    ) -> std::result::Result<SseEvent, eventsource_stream::EventStreamError<reqwest::Error>> {
+        Ok(SseEvent {
+            data: data.into(),
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn drive_stream_emits_start_text_and_stop() {
+        let items = vec![
+            sse(r#"{"model":"m","choices":[{"delta":{"content":"hi"}}]}"#),
+            sse(""),       // 빈 data → 건너뜀
+            sse("[DONE]"), // 종료 → 마지막에 MessageStop 1회
+        ];
+        let st = StreamState::new(Box::pin(futures::stream::iter(items)));
+        let out: Vec<StreamEvent> = drain(st).await.into_iter().map(|r| r.unwrap()).collect();
+        assert!(matches!(
+            out.first(),
+            Some(StreamEvent::MessageStart { .. })
+        ));
+        assert!(out
+            .iter()
+            .any(|e| matches!(e, StreamEvent::TextDelta(t) if t == "hi")));
+        assert!(matches!(out.last(), Some(StreamEvent::MessageStop { .. })));
+    }
+
+    #[tokio::test]
+    async fn drive_stream_reports_malformed_chunk_and_stops() {
+        let items = vec![sse("{not valid json")];
+        let st = StreamState::new(Box::pin(futures::stream::iter(items)));
+        let out = drain(st).await;
+        // 마지막(유일) 이벤트는 에러여야 하고, 그 뒤 MessageStop 없이 종료된다.
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_err());
+    }
 }

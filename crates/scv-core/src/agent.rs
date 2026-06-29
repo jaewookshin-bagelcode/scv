@@ -570,6 +570,48 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert!(matches!(&blocks[0], ContentBlock::ToolUse { input, .. } if input == &json!({})));
     }
+
+    #[test]
+    fn assembles_thinking_deltas_into_one_block() {
+        let blocks = apply_all(vec![
+            StreamEvent::ThinkingDelta("let me ".into()),
+            StreamEvent::ThinkingDelta("think".into()),
+            StreamEvent::ContentBlockStop,
+        ]);
+        assert_eq!(blocks.len(), 1);
+        assert!(
+            matches!(&blocks[0], ContentBlock::Thinking { text, .. } if text == "let me think")
+        );
+    }
+
+    #[test]
+    fn empty_text_and_thinking_blocks_are_dropped() {
+        // 빈 본문으로 열렸다 닫힌 블록은 버려진다(content 에 빈 블록을 넣지 않음).
+        let blocks = apply_all(vec![
+            StreamEvent::TextDelta(String::new()),
+            StreamEvent::ContentBlockStop,
+            StreamEvent::ThinkingDelta(String::new()),
+            StreamEvent::ContentBlockStop,
+        ]);
+        assert!(blocks.is_empty(), "got: {blocks:?}");
+    }
+
+    #[test]
+    fn invalid_tool_input_json_falls_back_to_empty_object() {
+        let blocks = apply_all(vec![
+            StreamEvent::ToolUseStart {
+                id: "c1".into(),
+                name: "read".into(),
+            },
+            StreamEvent::ToolUseInputDelta {
+                id: "c1".into(),
+                partial_json: "{not valid json".into(),
+            },
+            StreamEvent::ContentBlockStop,
+        ]);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::ToolUse { input, .. } if input == &json!({})));
+    }
 }
 
 #[cfg(test)]
@@ -798,6 +840,9 @@ mod exec_tests {
                 ToolOutput::ok("ran")
             }
         }
+        // AskTool 의 메타데이터 접근자도 계약대로 동작한다.
+        assert_eq!(AskTool.description(), "ask");
+        assert_eq!(AskTool.input_schema()["type"], "object");
         let mut reg = ToolRegistry::new();
         reg.register(Arc::new(AskTool));
         let mut agent = agent_with(reg);
@@ -869,5 +914,303 @@ mod exec_tests {
             .run_turn(&mut session, "hi".into(), &NullObserver)
             .await;
         assert!(r.is_ok(), "expected Ok (turn ended), got {r:?}");
+    }
+
+    /// 매 호출마다 미리 정해둔 이벤트 시퀀스를 순서대로 흘리는 프로바이더(다중 이터레이션용).
+    struct SeqProvider {
+        scripts: std::sync::Mutex<std::collections::VecDeque<Vec<StreamEvent>>>,
+    }
+    #[async_trait]
+    impl Provider for SeqProvider {
+        fn id(&self) -> &str {
+            "seq"
+        }
+        fn models(&self) -> &[ModelInfo] {
+            &[]
+        }
+        async fn stream(&self, _request: CompletionRequest) -> Result<EventStream> {
+            let evs = self.scripts.lock().unwrap().pop_front().unwrap_or_default();
+            let evs: Vec<Result<StreamEvent>> = evs.into_iter().map(Ok).collect();
+            Ok(Box::pin(futures::stream::iter(evs)))
+        }
+        async fn count_tokens(
+            &self,
+            _s: Option<&str>,
+            _m: &[Message],
+            _t: &[ToolSchema],
+        ) -> Result<u64> {
+            Ok(0)
+        }
+    }
+
+    fn agent_with_provider(provider: Arc<dyn Provider>, tools: ToolRegistry) -> Agent {
+        Agent {
+            provider,
+            tools,
+            permissions: Arc::new(AllowGate),
+            context: Arc::new(NoopContextManager),
+            model: "m".into(),
+            system_prompt: String::new(),
+            max_tokens: 16,
+            effort: None,
+            max_tool_iterations: 3,
+            tool_ctx: ToolContext {
+                workdir: std::env::temp_dir(),
+                cancel: CancellationToken::new(),
+            },
+        }
+    }
+
+    fn stop(reason: StopReason) -> StreamEvent {
+        StreamEvent::MessageStop {
+            stop_reason: reason,
+            usage: crate::message::Usage::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_turn_plain_text_ends_turn() {
+        let provider = Arc::new(ScriptProvider {
+            events: vec![
+                StreamEvent::MessageStart { model: "m".into() },
+                StreamEvent::TextDelta("hello".into()),
+                stop(StopReason::EndTurn),
+            ],
+        });
+        let agent = agent_with_provider(provider, ToolRegistry::new());
+        let mut session = Session::new();
+        agent
+            .run_turn(&mut session, "hi".into(), &NullObserver)
+            .await
+            .expect("ok");
+        // user + assistant(text) 가 세션에 남는다.
+        assert_eq!(session.messages.len(), 2);
+        assert!(matches!(
+            &session.messages[1].content[0],
+            ContentBlock::Text { text } if text == "hello"
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_turn_executes_tool_then_completes() {
+        let provider = Arc::new(SeqProvider {
+            scripts: std::sync::Mutex::new(std::collections::VecDeque::from(vec![
+                // 이터레이션 0: tool_use 요청.
+                vec![
+                    StreamEvent::MessageStart { model: "m".into() },
+                    StreamEvent::ToolUseStart {
+                        id: "c1".into(),
+                        name: "echo".into(),
+                    },
+                    StreamEvent::ToolUseInputDelta {
+                        id: "c1".into(),
+                        partial_json: "{}".into(),
+                    },
+                    stop(StopReason::ToolUse),
+                ],
+                // 이터레이션 1: 도구 결과를 본 뒤 텍스트로 마무리.
+                vec![
+                    StreamEvent::TextDelta("done".into()),
+                    stop(StopReason::EndTurn),
+                ],
+            ])),
+        });
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(EchoTool {
+            name: "echo".into(),
+            parallel: true,
+        }));
+        let agent = agent_with_provider(provider, reg);
+        let mut session = Session::new();
+        agent
+            .run_turn(&mut session, "go".into(), &NullObserver)
+            .await
+            .expect("ok");
+        // user, assistant(tool_use), user(tool_result), assistant(text)
+        assert_eq!(session.messages.len(), 4);
+        assert!(matches!(
+            &session.messages[2].content[0],
+            ContentBlock::ToolResult { content, .. } if content == "echo"
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_turn_reaches_max_iterations() {
+        // 매번 tool_use 만 요청 → 도구는 돌지만 끝나지 않아 상한에서 MaxIterations.
+        let provider = Arc::new(ScriptProvider {
+            events: vec![
+                StreamEvent::ToolUseStart {
+                    id: "c1".into(),
+                    name: "echo".into(),
+                },
+                StreamEvent::ToolUseInputDelta {
+                    id: "c1".into(),
+                    partial_json: "{}".into(),
+                },
+                stop(StopReason::ToolUse),
+            ],
+        });
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(EchoTool {
+            name: "echo".into(),
+            parallel: false,
+        }));
+        let mut agent = agent_with_provider(provider, reg);
+        agent.max_tool_iterations = 2;
+        let mut session = Session::new();
+        let err = agent
+            .run_turn(&mut session, "go".into(), &NullObserver)
+            .await
+            .expect_err("should hit the iteration cap");
+        assert!(matches!(err, Error::MaxIterations(2)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn run_turn_cancelled_at_entry_returns_cancelled() {
+        let agent = agent_with(ToolRegistry::new());
+        agent.tool_ctx.cancel.cancel(); // 진입 전 취소.
+        let mut session = Session::new();
+        let err = agent
+            .run_turn(&mut session, "hi".into(), &NullObserver)
+            .await
+            .expect_err("cancelled");
+        assert!(matches!(err, Error::Cancelled));
+    }
+
+    /// 스트림의 첫 이벤트를 내보내며 토큰을 취소해, 스트림 소비 도중 중단을 재현한다.
+    struct CancelMidStreamProvider {
+        cancel: CancellationToken,
+    }
+    #[async_trait]
+    impl Provider for CancelMidStreamProvider {
+        fn id(&self) -> &str {
+            "cancel-mid"
+        }
+        fn models(&self) -> &[ModelInfo] {
+            &[]
+        }
+        async fn stream(&self, _request: CompletionRequest) -> Result<EventStream> {
+            let cancel = self.cancel.clone();
+            let s = futures::stream::once(async move {
+                cancel.cancel();
+                Ok(StreamEvent::TextDelta("partial".into()))
+            });
+            Ok(Box::pin(s))
+        }
+        async fn count_tokens(
+            &self,
+            _s: Option<&str>,
+            _m: &[Message],
+            _t: &[ToolSchema],
+        ) -> Result<u64> {
+            Ok(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn run_turn_interrupted_mid_stream_preserves_partial() {
+        let token = CancellationToken::new();
+        let provider = Arc::new(CancelMidStreamProvider {
+            cancel: token.clone(),
+        });
+        let mut agent = agent_with_provider(provider, ToolRegistry::new());
+        agent.tool_ctx.cancel = token;
+        let mut session = Session::new();
+        let err = agent
+            .run_turn(&mut session, "hi".into(), &NullObserver)
+            .await
+            .expect_err("interrupted");
+        assert!(matches!(err, Error::Cancelled));
+        // 중단돼도 모은 부분 텍스트는 보존된다(user + assistant("partial")).
+        assert_eq!(session.messages.len(), 2);
+        assert!(matches!(
+            &session.messages[1].content[0],
+            ContentBlock::Text { text } if text == "partial"
+        ));
+    }
+
+    #[tokio::test]
+    async fn execute_tool_calls_cancelled_before_running() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(EchoTool {
+            name: "echo".into(),
+            parallel: true,
+        }));
+        let agent = agent_with(reg);
+        agent.tool_ctx.cancel.cancel();
+        let assistant = Message::assistant(vec![tool_use("1", "echo")]);
+        let err = agent
+            .execute_tool_calls(&assistant, &NullObserver)
+            .await
+            .expect_err("cancelled");
+        assert!(matches!(err, Error::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn tool_declaring_deny_aborts_turn() {
+        struct DenyTool;
+        #[async_trait]
+        impl Tool for DenyTool {
+            fn name(&self) -> &str {
+                "forbidden"
+            }
+            fn description(&self) -> &str {
+                "deny"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                json!({ "type": "object" })
+            }
+            fn permission(&self, _i: &serde_json::Value) -> PermissionLevel {
+                PermissionLevel::Deny
+            }
+            async fn invoke(&self, _i: serde_json::Value, _c: &ToolContext) -> ToolOutput {
+                ToolOutput::ok("should not run")
+            }
+        }
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(DenyTool));
+        let agent = agent_with(reg);
+        let assistant = Message::assistant(vec![tool_use("1", "forbidden")]);
+        let err = agent
+            .execute_tool_calls(&assistant, &NullObserver)
+            .await
+            .expect_err("deny aborts");
+        assert!(matches!(err, Error::PermissionDenied(t) if t == "forbidden"));
+    }
+
+    #[test]
+    fn agent_debug_renders_scalar_fields() {
+        let agent = agent_with(ToolRegistry::new());
+        let s = format!("{agent:?}");
+        assert!(s.contains("Agent"));
+        assert!(s.contains("stub")); // provider.id()
+        assert!(s.contains("max_tokens"));
+    }
+
+    #[tokio::test]
+    async fn test_doubles_expose_declared_surface() {
+        // 테스트 더블의 trait 표면(루프가 직접 호출하지 않는 접근자)도 계약대로 동작한다.
+        assert_eq!(StubProvider.id(), "stub");
+        assert!(StubProvider.models().is_empty());
+        assert_eq!(StubProvider.count_tokens(None, &[], &[]).await.unwrap(), 0);
+
+        let sp = ScriptProvider { events: vec![] };
+        assert_eq!(sp.id(), "script");
+        assert!(sp.models().is_empty());
+        assert_eq!(sp.count_tokens(None, &[], &[]).await.unwrap(), 0);
+
+        let echo = EchoTool {
+            name: "e".into(),
+            parallel: false,
+        };
+        assert_eq!(echo.description(), "echo");
+        assert_eq!(echo.input_schema()["type"], "object");
+
+        let barrier = BarrierTool {
+            name: "b".into(),
+            barrier: Arc::new(tokio::sync::Barrier::new(1)),
+        };
+        assert_eq!(barrier.description(), "barrier");
+        assert_eq!(barrier.input_schema()["type"], "object");
     }
 }

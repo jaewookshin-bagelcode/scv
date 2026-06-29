@@ -55,3 +55,40 @@ pub fn build(
         other => Err(Error::Provider(format!("unknown provider kind: {other}"))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_each_known_kind() {
+        for kind in ["anthropic", "openai", "openai-compat", "ollama"] {
+            let p = build(kind, "m".into(), "k".into(), None).expect("known kind builds");
+            assert!(!p.id().is_empty());
+            assert!(!p.models().is_empty());
+        }
+        // openai 계열은 id 로 자신의 kind 를 드러낸다.
+        assert_eq!(
+            build("openai-compat", "m".into(), "k".into(), None)
+                .unwrap()
+                .id(),
+            "openai-compat"
+        );
+    }
+
+    #[test]
+    fn ollama_builds_without_key_or_base_url() {
+        // base_url·키 생략 → ollama 는 로컬 기본값을 채워 out-of-box 동작.
+        let p = build("ollama", "qwen".into(), String::new(), None).expect("ollama builds");
+        assert_eq!(p.id(), "ollama");
+    }
+
+    #[test]
+    fn unknown_kind_is_error() {
+        match build("nope", "m".into(), "k".into(), None) {
+            Err(Error::Provider(msg)) => assert!(msg.contains("unknown provider kind")),
+            Err(other) => panic!("wrong error: {other}"),
+            Ok(_) => panic!("expected error for unknown kind"),
+        }
+    }
+}

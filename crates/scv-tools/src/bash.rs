@@ -174,4 +174,59 @@ mod tests {
         assert!(out.is_error);
         assert!(out.content.contains("timed out"), "{}", out.content);
     }
+
+    #[test]
+    fn metadata_is_ask() {
+        assert_eq!(BashTool.name(), "bash");
+        assert!(!BashTool.description().is_empty());
+        assert_eq!(BashTool.input_schema()["type"], "object");
+        assert_eq!(
+            BashTool.permission(&serde_json::json!({})),
+            PermissionLevel::Ask
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_and_empty_command() {
+        let missing = BashTool.invoke(serde_json::json!({}), &ctx()).await;
+        assert!(missing.is_error);
+        assert!(missing.content.contains("missing `command`"));
+
+        let empty = BashTool
+            .invoke(serde_json::json!({ "command": "   " }), &ctx())
+            .await;
+        assert!(empty.is_error);
+        assert!(empty.content.contains("empty `command`"));
+    }
+
+    #[tokio::test]
+    async fn captures_stderr_in_output() {
+        let out = BashTool
+            .invoke(serde_json::json!({ "command": "echo oops 1>&2" }), &ctx())
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("[stderr]"), "{}", out.content);
+        assert!(out.content.contains("oops"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn cancelled_command_is_reported() {
+        let c = ctx();
+        c.cancel.cancel();
+        let out = BashTool
+            .invoke(serde_json::json!({ "command": "sleep 5" }), &c)
+            .await;
+        assert!(out.is_error);
+        assert!(out.content.contains("cancelled"), "{}", out.content);
+    }
+
+    #[test]
+    fn truncate_caps_large_output() {
+        let small = "ok".to_string();
+        assert_eq!(truncate(small.clone()), small);
+        let big = "a".repeat(MAX_OUTPUT + 100);
+        let cut = truncate(big);
+        assert!(cut.len() <= MAX_OUTPUT + 32);
+        assert!(cut.contains("output truncated"));
+    }
 }

@@ -92,6 +92,14 @@ mod tests {
     }
 
     #[test]
+    fn session_id_default_is_unique() {
+        let a = SessionId::default();
+        let b = SessionId::default();
+        assert_ne!(a, b);
+        assert!(!a.0.is_empty());
+    }
+
+    #[test]
     fn session_round_trips_through_serde() {
         let mut s = Session::new();
         s.push(Message::user("hi"));

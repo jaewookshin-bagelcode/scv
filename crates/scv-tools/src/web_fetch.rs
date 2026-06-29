@@ -153,4 +153,12 @@ mod tests {
         assert!(out.starts_with("aaaa"));
         assert!(out.contains("truncated"));
     }
+
+    #[test]
+    fn metadata_and_default_ctor() {
+        let tool = WebFetchTool::default();
+        assert_eq!(tool.name(), "web_fetch");
+        assert!(!tool.description().is_empty());
+        assert_eq!(tool.input_schema()["type"], "object");
+    }
 }

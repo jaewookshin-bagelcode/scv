@@ -106,4 +106,48 @@ mod tests {
         assert!(!ctx.workdir.parent().unwrap().join("escaped.txt").exists());
         let _ = std::fs::remove_dir_all(&ctx.workdir);
     }
+
+    #[test]
+    fn metadata_is_ask() {
+        assert_eq!(WriteTool.name(), "write");
+        assert!(!WriteTool.description().is_empty());
+        assert_eq!(WriteTool.input_schema()["type"], "object");
+        assert_eq!(
+            WriteTool.permission(&serde_json::json!({})),
+            PermissionLevel::Ask
+        );
+    }
+
+    #[tokio::test]
+    async fn overwrites_an_existing_file() {
+        let ctx = ctx("overwrite");
+        std::fs::write(ctx.workdir.join("f.txt"), "old").unwrap();
+        // 이미 존재 → confine_existing 경로(실제 경로 검증)를 탄다.
+        let out = WriteTool
+            .invoke(
+                serde_json::json!({ "path": "f.txt", "content": "new content" }),
+                &ctx,
+            )
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        let written = std::fs::read_to_string(ctx.workdir.join("f.txt")).unwrap();
+        assert_eq!(written, "new content");
+        let _ = std::fs::remove_dir_all(&ctx.workdir);
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_fields() {
+        let ctx = ctx("missing");
+        assert!(WriteTool
+            .invoke(serde_json::json!({}), &ctx)
+            .await
+            .content
+            .contains("missing `path`"));
+        assert!(WriteTool
+            .invoke(serde_json::json!({ "path": "f.txt" }), &ctx)
+            .await
+            .content
+            .contains("missing `content`"));
+        let _ = std::fs::remove_dir_all(&ctx.workdir);
+    }
 }

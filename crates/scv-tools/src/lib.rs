@@ -81,3 +81,34 @@ impl PermissionGate for StaticPermissionGate {
         self.overrides.get(tool).copied().unwrap_or(self.default)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_registry_has_expected_tools() {
+        let reg = default_registry();
+        for name in ["read", "glob", "grep", "write", "edit", "bash", "web_fetch"] {
+            assert!(reg.get(name).is_some(), "missing tool: {name}");
+        }
+        // transcript_search 는 세션 dir 주입이 필요해 기본 레지스트리에 없다.
+        assert!(reg.get("transcript_search").is_none());
+    }
+
+    #[tokio::test]
+    async fn static_gate_default_and_override() {
+        let gate = StaticPermissionGate::new(PermissionLevel::Ask)
+            .with_override("bash", PermissionLevel::Allow)
+            .with_override("web_fetch", PermissionLevel::Deny);
+        let input = serde_json::json!({});
+        // 오버라이드 없는 도구는 기본값.
+        assert_eq!(gate.decide("read", &input).await, PermissionLevel::Ask);
+        // 오버라이드된 도구는 그 값.
+        assert_eq!(gate.decide("bash", &input).await, PermissionLevel::Allow);
+        assert_eq!(
+            gate.decide("web_fetch", &input).await,
+            PermissionLevel::Deny
+        );
+    }
+}

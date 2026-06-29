@@ -187,6 +187,15 @@ mod tests {
     }
 
     #[test]
+    fn registry_debug_lists_tool_names() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(DummyTool));
+        let s = format!("{reg:?}");
+        assert!(s.contains("ToolRegistry"));
+        assert!(s.contains("dummy"));
+    }
+
+    #[test]
     fn output_helpers_and_default_permission() {
         assert!(!ToolOutput::ok("x").is_error);
         assert!(ToolOutput::error("x").is_error);

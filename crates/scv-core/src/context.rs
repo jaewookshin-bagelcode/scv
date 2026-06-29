@@ -346,4 +346,58 @@ mod tests {
         let out = summarizer(100, 5).prepare(msgs, 999).await.unwrap();
         assert_eq!(out.len(), 1);
     }
+
+    #[tokio::test]
+    async fn summarizer_renders_all_block_kinds_in_prefix() {
+        use crate::message::Role;
+        // 접히는 앞부분에 모든 블록 종류 + System 역할을 넣어 render_transcript 의 분기를 모두 탄다.
+        let msgs = vec![
+            Message {
+                role: Role::System,
+                content: vec![ContentBlock::text("sys note")],
+            },
+            Message::assistant(vec![
+                ContentBlock::Thinking {
+                    text: "hmm".into(),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({}),
+                },
+            ]),
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "c1".into(),
+                    content: "x".repeat(300), // 200자 초과 → 잘림 경로.
+                    is_error: false,
+                }],
+            },
+            Message::user("recent"),
+        ];
+        let out = summarizer(100, 1).prepare(msgs, 500).await.unwrap();
+        assert_eq!(out.len(), 2, "summary + 1 recent");
+    }
+
+    #[test]
+    fn summarizing_manager_debug_shows_config() {
+        let s = format!("{:?}", summarizer(100, 4));
+        assert!(s.contains("SummarizingContextManager"));
+        assert!(s.contains("threshold_tokens"));
+    }
+
+    #[tokio::test]
+    async fn fake_summary_provider_exposes_surface() {
+        assert_eq!(FakeSummaryProvider.id(), "fake");
+        assert!(FakeSummaryProvider.models().is_empty());
+        assert_eq!(
+            FakeSummaryProvider
+                .count_tokens(None, &[], &[])
+                .await
+                .unwrap(),
+            0
+        );
+    }
 }

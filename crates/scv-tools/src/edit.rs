@@ -131,4 +131,94 @@ mod tests {
         assert!(apply_edit("hello", "h", "h", false).is_err());
         assert!(apply_edit("hello", "", "x", false).is_err());
     }
+
+    fn ctx(tag: &str) -> ToolContext {
+        let dir = std::env::temp_dir().join(format!("scv-edit-{}-{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        ToolContext {
+            workdir: dir.canonicalize().expect("canon"),
+            cancel: scv_core::tool::CancellationToken::new(),
+        }
+    }
+
+    #[test]
+    fn metadata_is_ask() {
+        assert_eq!(EditTool.name(), "edit");
+        assert!(!EditTool.description().is_empty());
+        assert_eq!(EditTool.input_schema()["type"], "object");
+        assert_eq!(
+            EditTool.permission(&serde_json::json!({})),
+            PermissionLevel::Ask
+        );
+        assert!(!EditTool.parallel_safe());
+    }
+
+    #[tokio::test]
+    async fn invoke_edits_a_real_file() {
+        let ctx = ctx("ok");
+        std::fs::write(ctx.workdir.join("f.txt"), "let x = 1;").unwrap();
+        let out = EditTool
+            .invoke(
+                serde_json::json!({ "path": "f.txt", "old_string": "1", "new_string": "2" }),
+                &ctx,
+            )
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("1 replacement"));
+        let after = std::fs::read_to_string(ctx.workdir.join("f.txt")).unwrap();
+        assert_eq!(after, "let x = 2;");
+        let _ = std::fs::remove_dir_all(&ctx.workdir);
+    }
+
+    #[tokio::test]
+    async fn invoke_rejects_missing_fields() {
+        let ctx = ctx("missing");
+        assert!(EditTool
+            .invoke(serde_json::json!({}), &ctx)
+            .await
+            .content
+            .contains("missing `path`"));
+        assert!(EditTool
+            .invoke(serde_json::json!({ "path": "f" }), &ctx)
+            .await
+            .content
+            .contains("missing `old_string`"));
+        assert!(EditTool
+            .invoke(serde_json::json!({ "path": "f", "old_string": "a" }), &ctx,)
+            .await
+            .content
+            .contains("missing `new_string`"));
+        let _ = std::fs::remove_dir_all(&ctx.workdir);
+    }
+
+    #[tokio::test]
+    async fn invoke_reports_read_failure_and_apply_error() {
+        let ctx = ctx("errors");
+        // 디렉터리 경로 → confine 은 통과하지만 read_to_string 이 실패(read failed 분기).
+        std::fs::create_dir(ctx.workdir.join("sub")).unwrap();
+        let read_fail = EditTool
+            .invoke(
+                serde_json::json!({ "path": "sub", "old_string": "a", "new_string": "b" }),
+                &ctx,
+            )
+            .await;
+        assert!(read_fail.is_error);
+        assert!(
+            read_fail.content.contains("read failed"),
+            "{}",
+            read_fail.content
+        );
+
+        // 존재하지만 old_string 이 없음 → apply_edit 에러.
+        std::fs::write(ctx.workdir.join("g.txt"), "hello").unwrap();
+        let not_found = EditTool
+            .invoke(
+                serde_json::json!({ "path": "g.txt", "old_string": "zzz", "new_string": "b" }),
+                &ctx,
+            )
+            .await;
+        assert!(not_found.is_error);
+        let _ = std::fs::remove_dir_all(&ctx.workdir);
+    }
 }

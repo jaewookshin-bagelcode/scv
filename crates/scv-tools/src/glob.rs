@@ -135,4 +135,74 @@ mod tests {
         assert!(found.is_empty(), "found = {found:?}");
         let _ = std::fs::remove_dir_all(&wd);
     }
+
+    fn ctx(wd: std::path::PathBuf) -> ToolContext {
+        ToolContext {
+            workdir: wd,
+            cancel: scv_core::tool::CancellationToken::new(),
+        }
+    }
+
+    #[test]
+    fn metadata_is_read_only_and_parallel_safe() {
+        assert_eq!(GlobTool.name(), "glob");
+        assert!(!GlobTool.description().is_empty());
+        assert_eq!(GlobTool.input_schema()["type"], "object");
+        assert_eq!(
+            GlobTool.permission(&serde_json::json!({})),
+            PermissionLevel::Allow
+        );
+        assert!(GlobTool.parallel_safe());
+    }
+
+    #[tokio::test]
+    async fn invoke_returns_matches_then_no_matches() {
+        let wd = temp_workspace("invoke");
+        std::fs::write(wd.join("src/a.rs"), "").unwrap();
+        let ctx = ctx(wd.clone());
+
+        let out = GlobTool
+            .invoke(serde_json::json!({ "pattern": "**/*.rs" }), &ctx)
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("src/a.rs"));
+
+        // 베이스 디렉터리 지정 + 매치 없음 경로.
+        let none = GlobTool
+            .invoke(
+                serde_json::json!({ "pattern": "**/*.zzz", "path": "src" }),
+                &ctx,
+            )
+            .await;
+        assert!(!none.is_error);
+        assert_eq!(none.content, "(no matches)");
+        let _ = std::fs::remove_dir_all(&wd);
+    }
+
+    #[tokio::test]
+    async fn invoke_rejects_missing_pattern_and_escape() {
+        let wd = temp_workspace("badinput");
+        let ctx = ctx(wd.clone());
+        let missing = GlobTool.invoke(serde_json::json!({}), &ctx).await;
+        assert!(missing.is_error);
+        assert!(missing.content.contains("missing `pattern`"));
+
+        let escape = GlobTool
+            .invoke(serde_json::json!({ "pattern": "*", "path": "../.." }), &ctx)
+            .await;
+        assert!(escape.is_error);
+        let _ = std::fs::remove_dir_all(&wd);
+    }
+
+    #[tokio::test]
+    async fn invoke_reports_invalid_glob() {
+        let wd = temp_workspace("badglob");
+        let ctx = ctx(wd.clone());
+        let out = GlobTool
+            .invoke(serde_json::json!({ "pattern": "[" }), &ctx)
+            .await;
+        assert!(out.is_error);
+        assert!(out.content.contains("invalid glob"));
+        let _ = std::fs::remove_dir_all(&wd);
+    }
 }

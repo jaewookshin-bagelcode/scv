@@ -184,4 +184,87 @@ mod tests {
         assert!(search(&wd, &wd, "(unclosed", None).is_err());
         let _ = std::fs::remove_dir_all(&wd);
     }
+
+    #[test]
+    fn skips_non_utf8_files() {
+        let wd = temp_workspace("binary");
+        // 유효 UTF-8 아닌 바이트 → read_to_string 실패 → 조용히 건너뜀.
+        std::fs::write(wd.join("src/blob.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        std::fs::write(wd.join("src/a.rs"), "needle\n").unwrap();
+        let lines = search(&wd, &wd, "needle", None).expect("ok");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("src/a.rs:1:"));
+        let _ = std::fs::remove_dir_all(&wd);
+    }
+
+    #[test]
+    fn truncate_cuts_long_lines_on_char_boundary() {
+        let short = "abc";
+        assert_eq!(truncate(short), short);
+        let long = "x".repeat(MAX_LINE_LEN + 50);
+        let cut = truncate(&long);
+        assert!(cut.ends_with('…'));
+        assert!(cut.chars().count() <= MAX_LINE_LEN + 1);
+    }
+
+    fn ctx(wd: std::path::PathBuf) -> ToolContext {
+        ToolContext {
+            workdir: wd,
+            cancel: scv_core::tool::CancellationToken::new(),
+        }
+    }
+
+    #[test]
+    fn metadata_is_read_only_and_parallel_safe() {
+        assert_eq!(GrepTool.name(), "grep");
+        assert!(!GrepTool.description().is_empty());
+        assert_eq!(GrepTool.input_schema()["type"], "object");
+        assert_eq!(
+            GrepTool.permission(&serde_json::json!({})),
+            PermissionLevel::Allow
+        );
+        assert!(GrepTool.parallel_safe());
+    }
+
+    #[tokio::test]
+    async fn invoke_finds_then_reports_no_matches() {
+        let wd = temp_workspace("invoke");
+        std::fs::write(wd.join("src/a.rs"), "fn alpha() {}\n").unwrap();
+        let ctx = ctx(wd.clone());
+
+        let out = GrepTool
+            .invoke(serde_json::json!({ "pattern": r"fn \w+" }), &ctx)
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("src/a.rs:1:"));
+
+        let none = GrepTool
+            .invoke(serde_json::json!({ "pattern": "zzz-nope" }), &ctx)
+            .await;
+        assert!(!none.is_error);
+        assert_eq!(none.content, "(no matches)");
+        let _ = std::fs::remove_dir_all(&wd);
+    }
+
+    #[tokio::test]
+    async fn invoke_rejects_missing_pattern_escape_and_bad_regex() {
+        let wd = temp_workspace("badinput");
+        let ctx = ctx(wd.clone());
+
+        let missing = GrepTool.invoke(serde_json::json!({}), &ctx).await;
+        assert!(missing.is_error);
+        assert!(missing.content.contains("missing `pattern`"));
+
+        let escape = GrepTool
+            .invoke(serde_json::json!({ "pattern": "x", "path": "../.." }), &ctx)
+            .await;
+        assert!(escape.is_error);
+
+        let bad = GrepTool
+            .invoke(serde_json::json!({ "pattern": "(unclosed" }), &ctx)
+            .await;
+        assert!(bad.is_error);
+        assert!(bad.content.contains("invalid regex"));
+        let _ = std::fs::remove_dir_all(&wd);
+    }
 }

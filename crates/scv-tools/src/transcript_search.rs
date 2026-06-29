@@ -186,4 +186,57 @@ mod tests {
         );
         assert!(tool.invoke(serde_json::json!({}), &ctx()).await.is_error);
     }
+
+    #[test]
+    fn metadata_is_read_only_and_parallel_safe() {
+        let tool = TranscriptSearchTool::new(std::env::temp_dir());
+        assert_eq!(tool.name(), "transcript_search");
+        assert!(!tool.description().is_empty());
+        assert_eq!(tool.input_schema()["type"], "object");
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            PermissionLevel::Allow
+        );
+        assert!(tool.parallel_safe());
+    }
+
+    #[tokio::test]
+    async fn skips_non_jsonl_files() {
+        let dir = std::env::temp_dir().join(format!("scv-ts-nonjsonl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // .txt 는 건너뛰고, .jsonl 만 검색 대상.
+        std::fs::write(dir.join("notes.txt"), "needle here").unwrap();
+        write_session(&dir, "sess", &["{\"text\":\"needle here\"}"]);
+
+        let tool = TranscriptSearchTool::new(dir.clone());
+        let out = tool
+            .invoke(serde_json::json!({ "query": "needle" }), &ctx())
+            .await;
+        assert!(out.content.contains("sess:1:"), "got: {}", out.content);
+        assert!(!out.content.contains("notes"), "got: {}", out.content);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn caps_at_max_matches() {
+        let dir = std::env::temp_dir().join(format!("scv-ts-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // MAX_MATCHES(100) 를 초과하는 매치 라인 → 상한에서 멈춘다.
+        let lines: Vec<String> = (0..150).map(|i| format!("hit {i}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        write_session(&dir, "big", &refs);
+
+        let tool = TranscriptSearchTool::new(dir.clone());
+        let out = tool
+            .invoke(serde_json::json!({ "query": "hit" }), &ctx())
+            .await;
+        assert!(
+            out.content.contains("[stopped at 100 matches]"),
+            "{}",
+            out.content
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

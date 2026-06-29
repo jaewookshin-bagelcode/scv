@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use scv_core::agent::{Agent, NullObserver};
-use scv_core::context::NoopContextManager;
+use scv_core::context::{
+    ClearToolResultsManager, ContextManager, NoopContextManager, SummarizingContextManager,
+};
 use scv_core::message::{ContentBlock, Message, Role, StopReason, StreamEvent, Usage};
 use scv_core::provider::{CompletionRequest, EventStream, ModelInfo, Provider, ToolSchema};
 use scv_core::tool::{
@@ -369,4 +371,303 @@ async fn cancel_during_stream_preserves_partial_text() {
     assert_eq!(session.messages.len(), 2);
     assert!(matches!(&session.messages[1].content[0],
         ContentBlock::Text { text } if text == "partial answer"));
+}
+
+// ───────────────────────── 추가 종단 시나리오 ─────────────────────────
+
+/// 비-parallel(순차 실행) Allow 도구 — execute_tool_calls 의 순차 경로를 운동시킨다.
+struct SeqTool;
+#[async_trait]
+impl Tool for SeqTool {
+    fn name(&self) -> &str {
+        "seq"
+    }
+    fn description(&self) -> &str {
+        "sequential tool"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object" })
+    }
+    fn permission(&self, _input: &serde_json::Value) -> PermissionLevel {
+        PermissionLevel::Allow
+    }
+    fn parallel_safe(&self) -> bool {
+        false
+    }
+    async fn invoke(&self, _input: serde_json::Value, _ctx: &ToolContext) -> ToolOutput {
+        ToolOutput::ok("seq ran")
+    }
+}
+
+/// Ask 를 요구하는 도구(모달/게이트 결정 대상).
+struct AskTool;
+#[async_trait]
+impl Tool for AskTool {
+    fn name(&self) -> &str {
+        "danger"
+    }
+    fn description(&self) -> &str {
+        "irreversible"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object" })
+    }
+    fn permission(&self, _input: &serde_json::Value) -> PermissionLevel {
+        PermissionLevel::Ask
+    }
+    async fn invoke(&self, _input: serde_json::Value, _ctx: &ToolContext) -> ToolOutput {
+        ToolOutput::ok("should not run when denied")
+    }
+}
+
+struct DenyGate;
+#[async_trait]
+impl PermissionGate for DenyGate {
+    async fn decide(&self, _tool: &str, _input: &serde_json::Value) -> PermissionLevel {
+        PermissionLevel::Deny
+    }
+}
+
+/// 임의의 도구 집합·게이트·컨텍스트 관리자로 에이전트를 조립한다.
+fn assemble(
+    provider: Arc<dyn Provider>,
+    tools: ToolRegistry,
+    permissions: Arc<dyn PermissionGate>,
+    context: Arc<dyn ContextManager>,
+    cancel: CancellationToken,
+) -> Agent {
+    Agent {
+        provider,
+        tools,
+        permissions,
+        context,
+        model: "fake-model".into(),
+        system_prompt: "you are a test".into(),
+        max_tokens: 1000,
+        effort: None,
+        max_tool_iterations: 3,
+        tool_ctx: ToolContext {
+            workdir: std::env::temp_dir(),
+            cancel,
+        },
+    }
+}
+
+fn tool_call_script(name: &str) -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::MessageStart {
+            model: "fake".into(),
+        },
+        StreamEvent::ToolUseStart {
+            id: "c1".into(),
+            name: name.into(),
+        },
+        StreamEvent::ToolUseInputDelta {
+            id: "c1".into(),
+            partial_json: "{}".into(),
+        },
+        StreamEvent::MessageStop {
+            stop_reason: StopReason::ToolUse,
+            usage: Usage::default(),
+        },
+    ]
+}
+
+fn text_script(text: &str, input_tokens: u64) -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::TextDelta(text.into()),
+        StreamEvent::MessageStop {
+            stop_reason: StopReason::EndTurn,
+            usage: Usage {
+                input_tokens,
+                ..Usage::default()
+            },
+        },
+    ]
+}
+
+#[tokio::test]
+async fn summarizing_context_compacts_prefix_across_iterations() {
+    // compaction 트리거(last_input_tokens)는 한 run_turn 안의 직전 이터레이션 usage 다 →
+    // 도구 턴으로 이터레이션을 2개 만든다. 같은 FakeProvider 를 에이전트·요약기가 공유한다.
+    // 스크립트: ① iter0 도구호출(입력 토큰 500 → 임계 100 초과) ② iter1 요약 호출 ③ iter1 에이전트 호출.
+    let iter0 = vec![
+        StreamEvent::MessageStart {
+            model: "fake".into(),
+        },
+        StreamEvent::ToolUseStart {
+            id: "c1".into(),
+            name: "echo".into(),
+        },
+        StreamEvent::ToolUseInputDelta {
+            id: "c1".into(),
+            partial_json: "{}".into(),
+        },
+        StreamEvent::MessageStop {
+            stop_reason: StopReason::ToolUse,
+            usage: Usage {
+                input_tokens: 500, // 임계(100) 초과 → 다음 이터레이션에서 compaction.
+                ..Usage::default()
+            },
+        },
+    ];
+    let provider = Arc::new(FakeProvider::new(vec![
+        iter0,
+        text_script("SUMMARY of earlier conversation", 0),
+        text_script("final answer", 0),
+    ]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(EchoTool));
+    let agent = assemble(
+        provider.clone(),
+        tools,
+        Arc::new(AllowGate),
+        Arc::new(SummarizingContextManager::new(
+            provider,
+            "fake-model".into(),
+            100, // threshold_tokens
+            1,   // keep_recent
+        )),
+        CancellationToken::new(),
+    );
+
+    let mut session = scv_core::session::Session::new();
+    agent
+        .run_turn(&mut session, "go".into(), &NullObserver)
+        .await
+        .expect("turn ok");
+
+    // compaction 은 전송 메시지에만 영향 — 세션 원본은 그대로:
+    // [user, assistant(tool_use), user(tool_result), assistant("final answer")].
+    assert_eq!(session.messages.len(), 4);
+    assert!(matches!(&session.messages[3].content[0],
+        ContentBlock::Text { text } if text == "final answer"));
+}
+
+#[tokio::test]
+async fn clear_tool_results_manager_runs_in_loop() {
+    // tool 턴 → 이터레이션 1 의 prepare 에서 직전 tool_result 가 정리 대상이 된다.
+    let provider = Arc::new(FakeProvider::new(vec![
+        tool_call_script("echo"),
+        text_script("done", 0),
+    ]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(EchoTool));
+    let agent = assemble(
+        provider,
+        tools,
+        Arc::new(AllowGate),
+        Arc::new(ClearToolResultsManager::new(1)),
+        CancellationToken::new(),
+    );
+    let mut session = scv_core::session::Session::new();
+    agent
+        .run_turn(&mut session, "go".into(), &NullObserver)
+        .await
+        .expect("turn ok");
+    assert_eq!(session.messages.len(), 4);
+}
+
+#[tokio::test]
+async fn unknown_tool_yields_error_result_and_turn_continues() {
+    let provider = Arc::new(FakeProvider::new(vec![
+        tool_call_script("does-not-exist"),
+        text_script("recovered", 0),
+    ]));
+    let agent = assemble(
+        provider,
+        ToolRegistry::new(), // 도구 없음 → 미지의 도구.
+        Arc::new(AllowGate),
+        Arc::new(NoopContextManager),
+        CancellationToken::new(),
+    );
+    let mut session = scv_core::session::Session::new();
+    agent
+        .run_turn(&mut session, "go".into(), &NullObserver)
+        .await
+        .expect("turn ok");
+    // [user, assistant(tool_use), user(error tool_result), assistant(text)]
+    match &session.messages[2].content[0] {
+        ContentBlock::ToolResult {
+            content, is_error, ..
+        } => {
+            assert!(is_error);
+            assert!(content.contains("unknown tool"), "got: {content}");
+        }
+        other => panic!("expected error tool_result, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn sequential_tool_executes_through_loop() {
+    let provider = Arc::new(FakeProvider::new(vec![
+        tool_call_script("seq"),
+        text_script("after seq", 0),
+    ]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(SeqTool));
+    let agent = assemble(
+        provider,
+        tools,
+        Arc::new(AllowGate),
+        Arc::new(NoopContextManager),
+        CancellationToken::new(),
+    );
+    let mut session = scv_core::session::Session::new();
+    agent
+        .run_turn(&mut session, "go".into(), &NullObserver)
+        .await
+        .expect("turn ok");
+    match &session.messages[2].content[0] {
+        ContentBlock::ToolResult { content, .. } => assert_eq!(content, "seq ran"),
+        other => panic!("expected tool_result, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn denied_ask_tool_aborts_turn() {
+    let provider = Arc::new(FakeProvider::new(vec![tool_call_script("danger")]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(AskTool));
+    let agent = assemble(
+        provider,
+        tools,
+        Arc::new(DenyGate),
+        Arc::new(NoopContextManager),
+        CancellationToken::new(),
+    );
+    let mut session = scv_core::session::Session::new();
+    let err = agent
+        .run_turn(&mut session, "go".into(), &NullObserver)
+        .await
+        .expect_err("deny aborts the turn");
+    assert!(matches!(err, scv_core::Error::PermissionDenied(t) if t == "danger"));
+}
+
+#[tokio::test]
+async fn turn_reaches_max_iterations() {
+    // 매 호출 tool_use 만 → 끝나지 않아 상한(max_tool_iterations=3)에서 MaxIterations.
+    let provider = Arc::new(FakeProvider::new(vec![
+        tool_call_script("echo"),
+        tool_call_script("echo"),
+        tool_call_script("echo"),
+    ]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(EchoTool));
+    let agent = assemble(
+        provider,
+        tools,
+        Arc::new(AllowGate),
+        Arc::new(NoopContextManager),
+        CancellationToken::new(),
+    );
+    let mut session = scv_core::session::Session::new();
+    let err = agent
+        .run_turn(&mut session, "loop".into(), &NullObserver)
+        .await
+        .expect_err("should hit iteration cap");
+    assert!(
+        matches!(err, scv_core::Error::MaxIterations(3)),
+        "got {err:?}"
+    );
 }
