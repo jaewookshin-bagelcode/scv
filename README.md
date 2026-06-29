@@ -226,6 +226,27 @@ scv --model qwen3.6:35b-a3b "..."    # 원샷도 동일
 > `AGENTS.md` 라도 모델에 따라 따르는 정도가 다르다 — 지시를 잘 안 따르면 더 큰 모델이나
 > 클라우드로 올린다.
 
+### 무료로 더 나은 모델 — Gemini(Google AI Studio)
+
+로컬 모델의 지시 준수가 아쉬우면 **무료 티어**가 있는 Gemini 가 현실적 대안이다. OpenAI-호환
+엔드포인트라 `openai-compat` 프로바이더로 붙고 function calling·streaming 이 그대로 된다.
+키는 [aistudio.google.com](https://aistudio.google.com) → "Get API key"(카드 불필요)에서 발급한다.
+`~/.scv/config.toml` 에 프로바이더를 추가한다(예시: [`config/config.example.toml`](./config/config.example.toml)):
+
+```toml
+[[providers]]
+id = "gemini"
+kind = "openai-compat"
+model = "gemini-2.5-flash"           # 무료: 2.5-flash · 3.5-flash · *-flash-lite · gemma-4
+api_key_env = "GEMINI_API_KEY"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+```
+
+```bash
+export GEMINI_API_KEY=...             # aistudio.google.com 에서 발급
+scv --provider gemini "이 코드베이스 설명해줘"
+```
+
 ### 클라우드 프로바이더로 전환
 
 ```bash

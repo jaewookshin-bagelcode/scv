@@ -71,3 +71,15 @@ kind = "ollama"
 model = "qwen3.5:9b"
 # api_key_env 생략 = 무인증(Ollama 는 키를 요구하지 않는다).
 # base_url = "http://localhost:11434/v1"   # 생략하면 kind="ollama" 가 이 값을 기본 사용
+
+# Gemini (Google AI Studio) — OpenAI-호환 엔드포인트, 무료 티어(Flash 계열).
+# kind="openai-compat" 면 와이어 호환 모드(reasoning_effort·stream_options 미전송)로 보낸다.
+# function calling·streaming 지원 → 코딩 에이전트에 사용 가능(로컬 모델 대비 지시 준수 양호).
+# 무료 모델: gemini-2.5-flash | gemini-3.5-flash | *-flash-lite | gemma-4 (Pro 계열은 유료).
+# 키 발급: https://aistudio.google.com → "Get API key"(카드 불필요) 후 export GEMINI_API_KEY=...
+[[providers]]
+id = "gemini"
+kind = "openai-compat"
+model = "gemini-2.5-flash"
+api_key_env = "GEMINI_API_KEY"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"

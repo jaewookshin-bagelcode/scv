@@ -175,6 +175,17 @@ cargo run --bin scv -- --provider openai --model gpt-5.5 "이 repo 구조를 한
 cargo run --bin scv -- --provider openai --model gpt-4o --effort none "안녕, 한 줄로 자기소개 해줘"
 ```
 
+**무료(Gemini).** Google AI Studio 의 OpenAI-호환 엔드포인트는 무료 티어(Flash 계열)를 준다.
+`kind="openai-compat"` 프로바이더로 붙이면 function calling·streaming 이 그대로 동작한다 —
+로컬 모델보다 지시 준수가 나아 무료로 더 안정적인 대안이다. 키는 <https://aistudio.google.com>
+→ "Get API key"(카드 불필요)에서 발급한다(`config.example.toml` 의 `gemini` 프로바이더 참고):
+
+```bash
+export GEMINI_API_KEY="..."
+cargo run --bin scv -- --provider gemini --model gemini-2.5-flash "이 repo 구조를 한 문단으로 설명해줘"
+# 무료 모델: gemini-2.5-flash | gemini-3.5-flash | *-flash-lite | gemma-4 (Pro 계열은 유료)
+```
+
 - 설정은 **다단계 병합**(뒤가 앞을 덮음): `~/.scv/config.toml`(`SCV_CONFIG` override)
   → 프로젝트 `./.scv/config.toml`(cwd 기준) → 환경변수 `SCV_*`(중첩은 `__`) → CLI 플래그.
   누락 파일은 건너뛰므로 사용자 설정만 있어도 된다.
