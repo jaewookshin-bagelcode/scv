@@ -47,7 +47,7 @@ struct Cli {
     #[arg(long)]
     effort: Option<String>,
 
-    /// 도구 스키마를 보내지 않는다(tool calling 미지원 로컬 모델용, 예 gemma).
+    /// 도구 스키마를 보내지 않는다(tool calling 을 지원하지 않는 모델·게이트웨이용).
     /// 텍스트 스트리밍·하네스만 확인할 때 쓴다.
     #[arg(long)]
     no_tools: bool,
