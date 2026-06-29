@@ -82,4 +82,6 @@ id = "gemini"
 kind = "openai-compat"
 model = "gemini-2.5-flash"
 api_key_env = "GEMINI_API_KEY"
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+# 끝 슬래시 없이 적는다(끝에 /chat/completions 가 붙음). scv 가 끝 슬래시를 제거해 주지만
+# 정규 형태로 둔다.
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"

@@ -239,7 +239,7 @@ id = "gemini"
 kind = "openai-compat"
 model = "gemini-2.5-flash"           # 무료: 2.5-flash · 3.5-flash · *-flash-lite · gemma-4
 api_key_env = "GEMINI_API_KEY"
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"   # 끝 슬래시 없이
 ```
 
 ```bash
