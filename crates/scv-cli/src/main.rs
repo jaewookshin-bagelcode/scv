@@ -78,6 +78,12 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // 0.5. 첫 실행이면 cwd 에 프로젝트 마커 `./.scv/` 를 만든다(claude 의 `.claude/`,
+    //   codex 의 `.codex/` 처럼). 전역 설정·세션·worktree 는 여전히 `~/.scv/` 아래 있고,
+    //   이 디렉터리는 "여기서 scv 를 썼다"는 표식이자 프로젝트 로컬 오버라이드
+    //   (`./.scv/config.toml`·`./.scv/skills/`)를 둘 자리다.
+    ensure_project_dir(&cwd).await;
+
     // 1. 설정 로드.
     let config = scv_config::Config::load().context("설정 로드 실패")?;
     let provider_id = cli.provider.as_deref().unwrap_or(&config.default_provider);
@@ -293,6 +299,23 @@ fn is_within(cwd: &std::path::Path, root: &std::path::Path) -> bool {
     }
 }
 
+/// 첫 실행 시 cwd 에 프로젝트 마커 디렉터리 `./.scv/` 를 만든다(claude `.claude/`,
+/// codex `.codex/` 처럼). 이미 있으면 아무것도 하지 않는다(idempotent). 핵심 상태
+/// (설정·세션·worktree)는 여전히 `~/.scv/` 아래 있으므로, 만들기에 실패해도 실행을
+/// 막지 않고 경고만 남긴다.
+async fn ensure_project_dir(cwd: &std::path::Path) {
+    let dir = cwd.join(".scv");
+    if dir.exists() {
+        return;
+    }
+    match tokio::fs::create_dir_all(&dir).await {
+        Ok(()) => tracing::info!(path = %dir.display(), "프로젝트 디렉터리 생성"),
+        Err(error) => {
+            tracing::warn!(%error, path = %dir.display(), "프로젝트 디렉터리 생성 실패(무시하고 계속)")
+        }
+    }
+}
+
 /// 설정의 경로 문자열에서 선행 `~/` 를 홈 디렉터리로 확장한다(없으면 그대로).
 fn expand_tilde(path: &str) -> std::path::PathBuf {
     match path.strip_prefix("~/") {
@@ -364,6 +387,25 @@ mod tests {
         assert!(!is_within(&outside, &root), "sibling is not within root");
         // 존재하지 않는 경로는 차단하지 않는다(canonicalize 실패 → false).
         assert!(!is_within(&base.join("ghost"), &root));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn ensure_project_dir_creates_marker_and_is_idempotent() {
+        let base = std::env::temp_dir().join(format!("scv-projdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let marker = base.join(".scv");
+
+        // 첫 실행: 마커가 없으면 만든다.
+        assert!(!marker.exists());
+        ensure_project_dir(&base).await;
+        assert!(marker.is_dir(), "첫 실행이 ./.scv/ 를 만든다");
+
+        // 두 번째 실행: 이미 있으면 그대로(에러 없이 idempotent).
+        ensure_project_dir(&base).await;
+        assert!(marker.is_dir());
 
         let _ = std::fs::remove_dir_all(&base);
     }

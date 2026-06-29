@@ -86,6 +86,12 @@ export ANTHROPIC_API_KEY="sk-ant-..." # --provider anthropic
 내장 기본값 → ~/.scv/config.toml → ./.scv/config.toml(프로젝트) → 환경변수(SCV_*) → CLI 플래그
 ```
 
+**프로젝트 마커 `./.scv/`**: 어떤 디렉터리에서 `scv` 를 처음 실행하면 그 cwd 에 빈
+`./.scv/` 디렉터리를 자동으로 만든다(claude 의 `.claude/`, codex 의 `.codex/` 처럼,
+이미 있으면 그대로). 프로젝트 로컬 오버라이드(`./.scv/config.toml`·`./.scv/skills/`)를
+둘 자리다. 만들기에 실패해도 실행은 막지 않는다(핵심 설정·세션·worktree 는 `~/.scv/` 에
+있으므로). `./.scv/` 는 `.gitignore` 대상이라 커밋되지 않는다.
+
 예시를 사용자 설정 위치로 복사:
 
 ```bash
