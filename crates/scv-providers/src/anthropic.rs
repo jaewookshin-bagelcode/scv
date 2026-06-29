@@ -57,7 +57,11 @@ impl AnthropicProvider {
         Self {
             model,
             api_key,
-            base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+            // 끝 슬래시를 제거해 `{base_url}/v1/messages` 가 이중 슬래시로 깨지지 않게 한다.
+            base_url: base_url
+                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+                .trim_end_matches('/')
+                .to_string(),
             http: reqwest::Client::new(),
             models: vec![ModelInfo {
                 id: "claude-opus-4-8".into(),

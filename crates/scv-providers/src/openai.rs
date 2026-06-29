@@ -33,6 +33,14 @@ use scv_core::{Error, Result};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
+/// 설정의 `base_url` 을 정규화한다 — 끝 슬래시를 모두 제거해 엔드포인트 경로를
+/// 이어붙일 때(`{base_url}/chat/completions` 등) 이중 슬래시가 생기지 않게 한다.
+/// `None` 이면 OpenAI 기본 base_url 을 쓴다. anthropic 어댑터도 공유한다.
+pub(crate) fn normalize_base_url(base_url: Option<String>) -> String {
+    let raw = base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+    raw.trim_end_matches('/').to_string()
+}
+
 #[derive(Debug)]
 pub struct OpenAiProvider {
     /// 설정 `kind` 가 그대로 [`Provider::id`] 로 보고된다("openai"·"openai-compat"·"ollama" 등).
@@ -62,7 +70,10 @@ impl OpenAiProvider {
         Self {
             id: id.into(),
             api_key,
-            base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+            // 끝 슬래시를 제거해 `{base_url}/chat/completions` 가 항상 단일 슬래시가
+            // 되게 한다 — `.../v1beta/openai/` 같은 입력이 `//chat/completions` 로
+            // 이어져 404 나는 것을 막는다(Gemini 호환 엔드포인트 등).
+            base_url: normalize_base_url(base_url),
             http: reqwest::Client::new(),
             models: vec![ModelInfo {
                 id: model,
@@ -619,6 +630,40 @@ mod tests {
             effort: Some(Effort::High),
             thinking: ThinkingMode::Adaptive,
         }
+    }
+
+    #[test]
+    fn normalize_base_url_trims_trailing_slashes_and_defaults() {
+        // 끝 슬래시(들)를 제거해 `{base_url}/chat/completions` 가 단일 슬래시가 되게 한다.
+        assert_eq!(
+            normalize_base_url(Some(
+                "https://generativelanguage.googleapis.com/v1beta/openai/".into()
+            )),
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        );
+        assert_eq!(
+            normalize_base_url(Some("http://x/v1//".into())),
+            "http://x/v1"
+        );
+        // 슬래시 없는 입력은 그대로.
+        assert_eq!(
+            normalize_base_url(Some("http://x/v1".into())),
+            "http://x/v1"
+        );
+        // None → OpenAI 기본값.
+        assert_eq!(normalize_base_url(None), DEFAULT_BASE_URL);
+        // 정규화된 base_url 로 만든 프로바이더의 요청 URL 은 이중 슬래시가 없다.
+        let p = OpenAiProvider::new(
+            "openai-compat",
+            "gemini-2.5-flash".into(),
+            "k".into(),
+            Some("https://generativelanguage.googleapis.com/v1beta/openai/".into()),
+            true,
+        );
+        assert_eq!(
+            format!("{}/chat/completions", p.base_url),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        );
     }
 
     #[test]
