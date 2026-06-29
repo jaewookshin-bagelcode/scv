@@ -152,8 +152,12 @@ pub enum AgentEvent {
     Stream(StreamEvent),
     /// 도구 실행 시작.
     ToolStart { name: String },
-    /// 도구 실행 종료(에러 여부 포함).
-    ToolEnd { name: String, is_error: bool },
+    /// 도구 실행 종료(에러 여부와 모델에게 전달된 출력 포함).
+    ToolEnd {
+        name: String,
+        content: String,
+        is_error: bool,
+    },
     /// `Ask` 도구가 권한 게이트의 결정을 기다린다(사후 통지).
     PermissionAsked { name: String },
     /// 사용자 인터럽트로 턴이 중단됐다(사후 통지).

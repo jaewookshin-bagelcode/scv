@@ -23,6 +23,24 @@ use scv_core::message::{AgentEvent, StreamEvent};
 pub use app::{App, MakeProvider};
 pub use phase::SpinnerStyle;
 
+const MAX_TOOL_OUTPUT_DISPLAY_CHARS: usize = 12_000;
+
+pub(crate) fn format_tool_output_for_display(content: &str) -> Option<String> {
+    let trimmed = content.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.chars().count() <= MAX_TOOL_OUTPUT_DISPLAY_CHARS {
+        return Some(trimmed.to_string());
+    }
+    let mut out: String = trimmed
+        .chars()
+        .take(MAX_TOOL_OUTPUT_DISPLAY_CHARS)
+        .collect();
+    out.push_str("\n[tool output truncated for display]");
+    Some(out)
+}
+
 /// 루프 통지를 stdout 에 흘려보내는 최소 관찰자(원샷/디버그용).
 /// 풀 TUI 경로는 [`App`] 이 ratatui 로 렌더한다.
 #[derive(Debug, Default)]
@@ -55,7 +73,19 @@ impl Observer for StreamObserver {
                 );
             }
             AgentEvent::ToolStart { name } => print!("\n[tool: {name}] "),
-            AgentEvent::ToolEnd { name, is_error } if *is_error => print!("[{name} failed] "),
+            AgentEvent::ToolEnd {
+                name,
+                content,
+                is_error,
+            } => {
+                if *is_error {
+                    print!("[{name} failed] ");
+                }
+                if let Some(output) = format_tool_output_for_display(content) {
+                    print!("\n[{name} output]\n{output}\n");
+                }
+                let _ = std::io::stdout().flush();
+            }
             AgentEvent::PermissionAsked { name } => print!("\n[permission needed: {name}] "),
             AgentEvent::Interrupted => println!("\n[interrupted]"),
             _ => {}

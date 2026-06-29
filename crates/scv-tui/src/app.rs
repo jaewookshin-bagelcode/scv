@@ -36,6 +36,7 @@ use scv_core::tool::{CancellationToken, PermissionLevel};
 /// 실제 빌드는 이 클로저가 한다(`/provider` 명령이 호출).
 pub type MakeProvider<'a> = dyn Fn(&str) -> scv_core::Result<(Arc<dyn Provider>, String)> + 'a;
 
+use crate::format_tool_output_for_display;
 use crate::observer::ChannelObserver;
 use crate::permission::{InteractivePermissionGate, PermissionRequest};
 use crate::phase::{Phase, SpinnerStyle};
@@ -497,8 +498,15 @@ impl App {
                 self.flush_live(*stop_reason)
             }
             AgentEvent::ToolStart { name } => self.transcript.push(format!("⚙ {name}")),
-            AgentEvent::ToolEnd { name, is_error } if *is_error => {
-                self.transcript.push(format!("✗ {name} failed"))
+            AgentEvent::ToolEnd {
+                name,
+                content,
+                is_error,
+            } => {
+                if *is_error {
+                    self.transcript.push(format!("✗ {name} failed"));
+                }
+                self.push_tool_output(name, content);
             }
             _ => {}
         }
@@ -553,6 +561,15 @@ impl App {
                 .transcript
                 .push(format!("[unknown: /{c} — try /help or /skills]")),
         }
+    }
+
+    fn push_tool_output(&mut self, name: &str, content: &str) {
+        let Some(output) = format_tool_output_for_display(content) else {
+            return;
+        };
+        self.transcript.push(format!("[{name} output]"));
+        self.transcript
+            .extend(output.lines().map(std::string::ToString::to_string));
     }
 
     /// 누적된 스트리밍 텍스트를 transcript 로 옮긴다(빈 건 버림). 최종 응답이 thinking-only
@@ -909,9 +926,12 @@ mod tests {
         });
         app.apply_event(&AgentEvent::ToolEnd {
             name: "bash".into(),
+            content: "bad command\n[exit: 127]".into(),
             is_error: true,
         });
         assert!(app.transcript.iter().any(|l| l.contains("bash failed")));
+        assert!(app.transcript.iter().any(|l| l.contains("[bash output]")));
+        assert!(app.transcript.iter().any(|l| l.contains("bad command")));
     }
 
     #[test]

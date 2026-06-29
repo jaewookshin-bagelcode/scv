@@ -259,18 +259,21 @@ impl Agent {
                             .on_event(&AgentEvent::ToolStart { name: name.clone() })
                             .await;
                         let output = tool.invoke(input, &self.tool_ctx).await;
+                        let content = output.content;
+                        let is_error = output.is_error;
                         observer
                             .on_event(&AgentEvent::ToolEnd {
                                 name,
-                                is_error: output.is_error,
+                                content: content.clone(),
+                                is_error,
                             })
                             .await;
                         (
                             i,
                             ContentBlock::ToolResult {
                                 tool_use_id: id,
-                                content: output.content,
-                                is_error: output.is_error,
+                                content,
+                                is_error,
                             },
                         )
                     })
@@ -289,11 +292,21 @@ impl Agent {
             }
             let (id, name, input) = &uses[i];
             let block = match plan {
-                ToolPlan::Unknown => ContentBlock::ToolResult {
-                    tool_use_id: id.clone(),
-                    content: format!("unknown tool: {name}"),
-                    is_error: true,
-                },
+                ToolPlan::Unknown => {
+                    let content = format!("unknown tool: {name}");
+                    observer
+                        .on_event(&AgentEvent::ToolEnd {
+                            name: name.clone(),
+                            content: content.clone(),
+                            is_error: true,
+                        })
+                        .await;
+                    ContentBlock::ToolResult {
+                        tool_use_id: id.clone(),
+                        content,
+                        is_error: true,
+                    }
+                }
                 ToolPlan::Run { tool, .. } => {
                     // 협조적 취소: 비가역 도구 실행 사이 체크포인트.
                     if self.tool_ctx.cancel.is_cancelled() {
@@ -303,16 +316,19 @@ impl Agent {
                         .on_event(&AgentEvent::ToolStart { name: name.clone() })
                         .await;
                     let output = tool.invoke(input.clone(), &self.tool_ctx).await;
+                    let content = output.content;
+                    let is_error = output.is_error;
                     observer
                         .on_event(&AgentEvent::ToolEnd {
                             name: name.clone(),
-                            is_error: output.is_error,
+                            content: content.clone(),
+                            is_error,
                         })
                         .await;
                     ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
-                        content: output.content,
-                        is_error: output.is_error,
+                        content,
+                        is_error,
                     }
                 }
             };

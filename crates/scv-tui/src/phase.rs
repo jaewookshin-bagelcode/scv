@@ -171,6 +171,7 @@ mod tests {
         assert_eq!(p, Phase::RunningTool("bash".into()));
         let p = p.next(&AgentEvent::ToolEnd {
             name: "bash".into(),
+            content: "ok".into(),
             is_error: false,
         });
         assert_eq!(p, Phase::Waiting);
