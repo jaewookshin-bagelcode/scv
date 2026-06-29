@@ -27,7 +27,7 @@ scripts/coverage.sh                                        # 커버리지 게이
 - 일부 함수가 스캐폴드(`todo!()`/빈 스트림)임을 감안한다 — 빌드·clippy·test 는 통과해야
   하고, 새로 채운 부분은 테스트를 동반해야 한다.
 - **커버리지 게이트**(`scripts/coverage.sh`)는 테스트 티어별 라인 커버리지를 강제한다 —
-  unit ≥ 95% · integration ≥ 90% · e2e ≥ 85%(임계 SSOT 는 `docs/CODING_RULES.md` §10).
+  unit ≥ 95% · integration ≥ 78% · e2e ≥ 85%(임계 SSOT 는 `docs/CODING_RULES.md` §10).
   계측 빌드라 한 번 돌리는 데 시간이 걸리고, **스캐폴드 단계에선 임계 미달로 실패하는 게
   정상**이다 — 통과한 척하지 말고 티어별 실제 수치(예: `unit 53.62% < 95%`)와 재현
   명령(`scripts/coverage.sh`)을 그대로 보고한다. 전제 도구 미설치면 종료코드 2

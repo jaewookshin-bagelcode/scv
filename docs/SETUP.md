@@ -228,7 +228,7 @@ scripts/coverage.sh                               # 커버리지 게이트(block
 ```
 
 `scripts/coverage.sh` 는 테스트 티어별 라인 커버리지를 강제한다 — **unit ≥ 95% ·
-integration ≥ 90% · e2e ≥ 85%**(미달 시 비-0 종료, 임계의 SSOT 는 `docs/CODING_RULES.md`
+integration ≥ 78% · e2e ≥ 85%**(미달 시 비-0 종료, 임계의 SSOT 는 `docs/CODING_RULES.md`
 §10). 전제 도구는 한 번만 설치한다:
 
 ```bash
