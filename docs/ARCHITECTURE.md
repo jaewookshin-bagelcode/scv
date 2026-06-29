@@ -142,26 +142,12 @@ flowchart BT
 새 프로바이더 추가 = `Provider` 한 개 구현 + `scv_providers::build` 에 `kind` 분기
 한 줄. 코어·도구·TUI 는 손대지 않는다.
 
-**인증 경로(API 키 / 구독 OAuth).** 현재 어댑터는 **API 키**(OpenAI `Bearer`,
-Anthropic `x-api-key`)를 환경변수에서 읽는다. ChatGPT/Codex **구독 OAuth**(플랫폼 API
-키 없이)를 쓰려는 경우의 선택지와 적합도:
-
-1. **OpenAI-호환 게이트웨이/프록시** — 게이트웨이가 `/chat/completions` 를 노출하면
-   `base_url` 만 가리키면 된다. **어댑터 변경 0, 자체 루프·도구·권한 그대로 유지**. ★권장.
-2. **OAuth access token → OpenAI 백엔드 직접(Responses API 어댑터)** — 자체 루프는
-   유지하나 엔드포인트/형식이 비공식·비공개라 불안정하고, Codex 전용 토큰 재사용은 ToS
-   회색지대. 새 `kind` + 어댑터 필요.
-3. **Codex app-server(JSON-RPC `thread/turn`)** — app-server 는 *모델*이 아니라 *완성된
-   에이전트*라, scv 가 호출하면 **Codex 가 자체 도구·승인·루프를 돌린다** → scv 의
-   `run_turn`/`ToolRegistry`/`PermissionGate` 가 무력화돼 scv 가 "Codex 래퍼"가 된다.
-   자체 코딩 에이전트라는 정체성과 충돌하므로 **기본 채택하지 않는다** — 다만 구독(ChatGPT/
-   Codex) OAuth 를 공식 경로로 쓰는 유일한 길이라 **향후 옵션(TODO)** 으로 남긴다
-   (ROADMAP §4f; OpenClaw 의 하이브리드 — native 도구는 Codex, dynamic 도구는 `item/tool/call`
-   로 scv 회수 + per-agent `CODEX_HOME` 격리 — 패턴 참고).
-
-즉 scv 는 "모델 토큰 스트림"을 받아 자체 루프를 돌리는 게 핵심이라 1 > 2 ≫ 3. **기존 OpenAI
-API 키 어댑터(`/chat/completions` + Bearer)는 기본 경로로 유지**하고(삭제하지 않음), 인증은
-키/게이트웨이를 1차로 둔다. 인증 타입 일반화는 ROADMAP §4e, app-server 프록시(TODO)는 §4f.
+**인증 경로.** 어댑터는 **API 키**(OpenAI `Bearer`, Anthropic `x-api-key`)를 환경변수에서 읽는다.
+scv 는 "모델 토큰 스트림을 받아 자체 루프를 돌리는 것"이 핵심이라, 구독(ChatGPT/Codex) OAuth 를
+쓰려는 경우엔 **OpenAI-호환 게이트웨이/프록시**(`base_url` 만 가리키면 어댑터 변경 0, 루프·도구·
+권한 유지)를 1차 권장한다. Codex app-server 로 붙이는 길은 Codex 가 자체 도구·승인·루프를 돌려
+scv 가 "Codex 래퍼"가 되므로(정체성과 충돌) 기본 채택하지 않고 향후 옵션으로만 둔다 — 선택지·
+트레이드오프 상세는 ROADMAP §4e·§4f.
 
 **같은 대화, 다른 와이어.** 코어가 든 중립 `messages`(§6)를 어댑터의 `to_wire` 가
 프로바이더 포맷으로 직렬화한다. 같은 한 줄(assistant 가 `read` 호출 → 그 결과)이 이렇게
@@ -265,17 +251,13 @@ OpenAI — 구조가 달라 어댑터가 재배치:
 핵심: **scv 는 세션별 파일 샌드박스를 만들지 않는다.** 따라서 "같은 repo 에서 여러
 세션을 돌려도 안 부딪치게" 하려면 격리를 명시적으로 제공해야 한다.
 
-알려진 한계(현 구현):
-- `FileSessionStore::save` 가 파일을 통째로 다시 쓴다(락 없음) → **같은 세션 id 를 두
-  프로세스에서 `--resume`** 하면 나중에 저장한 쪽이 덮어쓴다(데이터 손실). 다른 id 는 안전.
+**격리 구현**: `--isolate` 시 cwd 가 git repo 면 세션마다 **per-session git worktree**
+(`~/.scv/worktrees/<id>`, 같은 커밋의 독립 체크아웃)를 만들어 도구 workdir 로 주입한다 → 같은
+repo 라도 파일시스템이 물리적으로 분리되고, 종료 시 `Drop` 가 정리한다(ROADMAP §4c).
 
-계획(완전 격리):
-- **per-session git worktree**(또는 임시 workdir) — 세션마다 repo 를 별도 폴더로 체크아웃해
-  같은 repo 라도 물리적으로 분리. `ToolContext` 에 세션별 workdir 주입 / `SessionWorkspace`
-  추상 도입.
-- 세션 파일 **append-only 쓰기 또는 락** — 같은-세션 동시 접근 안전화.
-- 한 프로세스에서 다중 세션(서브에이전트)을 돌릴 경우 `SessionManager` + 세션별
-  workdir/권한 스코프(현재는 한 프로세스 = 한 대화).
+**잔여 한계**: `FileSessionStore::save` 가 파일을 통째로 다시 써(락 없음), **같은 세션 id 를 두
+프로세스가 동시에 `--resume`** 하면 나중 저장이 덮어쓴다(다른 id 는 안전). 한 프로세스 다중 세션
+(서브에이전트)은 현재 범위 밖(한 프로세스 = 한 대화). 상세는 ROADMAP 잔여 항목.
 
 ### 4.3 툴 — 행동 + 권한
 
@@ -470,11 +452,5 @@ enum AgentEvent {                           // 루프 → Observer 통지(관찰
 
 ## 8. 구현 현황과 다음 단계
 
-Phase 0–4 의 핵심 경로가 **구현 완료**다 — 프로바이더 `stream`(OpenAI·Anthropic·Ollama),
-도구(read/glob/grep/write/edit/bash/web_fetch/transcript_search), 권한 게이트, 인터랙티브
-TUI, 세션 영속화·재개, 컨텍스트 압축, 세션 격리가 모두 동작한다(코드에 `todo!()` 없음).
-남은 항목은 선택적 `4f`(Codex 런타임)뿐이다.
-
-동작하는 MVP 까지의 **구현 우선순위/순서는 [`ROADMAP.md`](./ROADMAP.md) 가 SSOT** 다
-(중복 방지 — 이 문서는 설계, ROADMAP 은 순서). 각 단계는 독립 테스트 가능하도록
-trait 경계에서 끊는다.
+Phase 0–4 핵심 경로가 **구현 완료**다(`todo!()` 없음) — 남은 것은 선택적 `4f`(Codex 런타임).
+구현 우선순위·순서·완료 상태는 [`ROADMAP.md`](./ROADMAP.md) 가 SSOT다(이 문서는 설계, ROADMAP 은 순서).

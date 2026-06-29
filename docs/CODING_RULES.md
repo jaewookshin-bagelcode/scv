@@ -20,7 +20,7 @@
 
 - 툴체인은 `rust-toolchain.toml` 로 고정한다(전원 동일 버전). edition **2021**.
 - 포맷은 `rustfmt.toml` 기준. **수동 정렬 금지** — `cargo fmt` 가 정답이다. **[CI]**
-- clippy 를 **deny-warnings** 로 돌린다: `cargo clippy --all-targets -- -D warnings`. **[CI]**
+- clippy 를 **deny-warnings** 로 돌린다: `cargo clippy --all-targets --all-features -- -D warnings`. **[CI]**
 - 각 라이브러리 크레이트 `lib.rs` 최상단에 lint 를 명시한다:
   ```rust
   #![warn(rust_2018_idioms, unreachable_pub, missing_debug_implementations)]
@@ -298,7 +298,7 @@ SCV_COV_UNIT=80 scripts/coverage.sh # 임계 임시 조정(SCV_COV_INTEGRATION/S
 
 ## 13. Git · 커밋 · PR
 
-- 기본 브랜치에 직접 커밋하지 않는다. 기능 브랜치 → PR.
+- 이 레포는 로컬/솔로 작업이라 **main 에 직접 커밋**한다(기능 브랜치 불필요). 커밋/푸시는 사용자 요청 시.
 - 커밋 메시지: 명령형 한 줄 요약(72자 이내) + 필요 시 본문에 "왜".
 - PR 은 작게. 리뷰어가 한 번에 파악 가능한 단위로 쪼갠다.
 - PR 전 로컬에서 `cargo fmt && cargo clippy -- -D warnings && cargo test` 통과 확인.
