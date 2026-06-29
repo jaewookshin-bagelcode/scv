@@ -205,7 +205,28 @@ EOF
 
 ---
 
-## 프로바이더 전환(클라우드)
+## LLM 모델 · 프로바이더 전환
+
+전환은 **세 가지 층위**가 있다 — ① 한 번만(CLI 플래그) ② 실행 중(TUI 슬래시 명령)
+③ 영구(설정 파일). 모델만 바꾸려면 `--model`, 백엔드까지 바꾸려면 `--provider` 다.
+
+### 로컬 모델만 바꾸기(같은 Ollama 안에서)
+
+기본 프로바이더(ollama)는 그대로 두고 모델만 교체한다. **쓰려는 모델이 ollama 에 받아져
+있어야** 한다(`ollama pull`). 코딩 에이전트엔 **tool calling 되는 모델**을 쓴다 —
+`qwen3.5:9b`·`gemma4:26b` 등은 도구 호출을 지원한다.
+
+```bash
+ollama pull gemma4:26b               # 한 번 받아두면
+scv --model gemma4:26b               # 그 모델로 실행(프로바이더는 ollama 유지)
+scv --model qwen3.6:35b-a3b "..."    # 원샷도 동일
+```
+
+> 작은 모델일수록 시스템 프롬프트의 지시(언어·형식 등) 준수가 약할 수 있다. 같은
+> `AGENTS.md` 라도 모델에 따라 따르는 정도가 다르다 — 지시를 잘 안 따르면 더 큰 모델이나
+> 클라우드로 올린다.
+
+### 클라우드 프로바이더로 전환
 
 ```bash
 # OpenAI (effort 가 reasoning_effort 로 매핑: low|medium|high|xhigh)
@@ -219,9 +240,31 @@ scv --provider anthropic --model claude-opus-4-8 "..."
 ```
 
 OpenAI-호환 게이트웨이(OpenRouter·사내 LLM 등)는 `[[providers]].base_url` 로 바꾼다.
-
-실행 중에는 TUI 에서 **`/provider <id>` · `/model <id>`** 슬래시 명령으로 전환한다(위 §TUI 키/명령).
 `--provider` 만 줘도 그 프로바이더의 설정 모델로 켜진다.
+
+### 실행 중 전환(TUI 슬래시 명령)
+
+세션을 유지한 채 다음 턴부터 바뀐다(위 §TUI 키/명령):
+
+```
+/model gemma4:26b      # 현재 프로바이더에서 모델만 교체
+/provider openai       # 프로바이더 전환(그 프로바이더의 설정 모델로)
+/providers             # 사용 가능한 프로바이더 id 목록
+```
+
+### 기본값을 영구히 바꾸기(설정 파일)
+
+매번 플래그를 주기 싫으면 `~/.scv/config.toml` 의 기본 프로바이더/모델을 고친다(프로젝트별로만
+바꾸려면 `./.scv/config.toml`). 자세한 형식은 아래 §설정.
+
+```toml
+default_provider = "ollama"          # 시작 시 켜질 프로바이더
+
+[[providers]]
+id = "ollama"
+kind = "ollama"
+model = "gemma4:26b"                 # 이 프로바이더의 기본 모델
+```
 
 ---
 
