@@ -414,6 +414,7 @@ async fn drive_stream(mut st: StreamState) -> Option<(Result<StreamEvent>, Strea
 struct ChunkDecoder {
     started: bool,
     tool_ids: HashMap<u32, String>,
+    saw_tool_call_start: bool,
     stop: StopReason,
     usage: Usage,
 }
@@ -423,6 +424,7 @@ impl ChunkDecoder {
         Self {
             started: false,
             tool_ids: HashMap::new(),
+            saw_tool_call_start: false,
             stop: StopReason::EndTurn,
             usage: Usage::default(),
         }
@@ -477,6 +479,7 @@ impl ChunkDecoder {
         if let Some(id) = tc.id {
             // 새 tool_call 시작: id+name 이 이 청크에만 온다.
             let name = tc.function.and_then(|f| f.name).unwrap_or_default();
+            self.saw_tool_call_start = true;
             self.tool_ids.insert(tc.index, id.clone());
             out.push(StreamEvent::ToolUseStart {
                 id: id.clone(),
@@ -495,8 +498,16 @@ impl ChunkDecoder {
     }
 
     fn finish(&self) -> StreamEvent {
+        let stop_reason = if self.stop == StopReason::ToolUse && !self.saw_tool_call_start {
+            tracing::warn!(
+                "finish_reason=tool_calls 이지만 structured tool_calls delta 가 없어 end_turn 으로 처리한다"
+            );
+            StopReason::EndTurn
+        } else {
+            self.stop
+        };
         StreamEvent::MessageStop {
-            stop_reason: self.stop,
+            stop_reason,
             usage: self.usage,
         }
     }
@@ -779,6 +790,26 @@ mod tests {
             r#"{"choices":[{"delta":{"content":"","reasoning":"thinking…"}}]}"#,
         );
         assert!(matches!(ev.as_slice(), [StreamEvent::ThinkingDelta(t)] if t == "thinking…"));
+    }
+
+    #[test]
+    fn tool_calls_finish_without_structured_tool_call_becomes_end_turn() {
+        // 일부 호환 백엔드는 tool_calls finish_reason 만 보내고 실제 delta.tool_calls 를
+        // 누락한다. 실행 가능한 structured tool_use 가 없으면 최종 응답으로 다룬다.
+        let mut d = ChunkDecoder::new();
+        let ev = decode_data(
+            &mut d,
+            r#"{"choices":[{"delta":{"reasoning":"try python3 next"},"finish_reason":"tool_calls"}]}"#,
+        );
+        assert!(
+            matches!(ev.as_slice(), [StreamEvent::ThinkingDelta(t)] if t == "try python3 next")
+        );
+        match d.finish() {
+            StreamEvent::MessageStop { stop_reason, .. } => {
+                assert_eq!(stop_reason, StopReason::EndTurn);
+            }
+            other => panic!("expected MessageStop, got {other:?}"),
+        }
     }
 
     #[test]

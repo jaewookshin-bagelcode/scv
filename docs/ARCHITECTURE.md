@@ -92,6 +92,11 @@ sequenceDiagram
 또 실려 나간다. 그래서 **전송량은 턴이 길수록 선형으로 커지고**, 이를 줄이려 프롬프트
 캐시(prefix 고정, §4.1)와 compaction(§4.2)이 붙는다.
 
+모델/호환 백엔드가 `stop_reason=tool_use` 를 내더라도 structured `tool_use` 블록이 없으면
+실행 가능한 도구 호출이 아니므로 최종 응답(`end_turn`)처럼 처리한다. 텍스트나 reasoning 안의
+함수 호출처럼 보이는 문자열은 도구 호출로 파싱하지 않는다(세부 규칙은 `docs/CODING_RULES.md`
+§9).
+
 ## 3. 멀티 프로바이더 추상
 
 프로바이더마다 와이어 포맷이 다르다(Anthropic Messages API vs OpenAI Chat

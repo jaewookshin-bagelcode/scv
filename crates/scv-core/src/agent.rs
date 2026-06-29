@@ -139,6 +139,16 @@ impl Agent {
 
             // 중단 시에도 모은 부분 텍스트를 세션에 보존한다(빈 메시지는 넣지 않음).
             let mut assistant = Message::assistant(assembler.finish());
+            let has_tool_use = assistant.tool_uses().next().is_some();
+            if !interrupted && stop_reason == StopReason::ToolUse && !has_tool_use {
+                // 일부 OpenAI-호환 백엔드는 structured tool_use 없이 finish_reason 만
+                // tool_calls 로 보내고 reasoning 만 흘린다. 실행할 도구가 없으면 최종 응답으로
+                // 처리해 thinking-only fallback 이 사용자에게 보이게 한다.
+                tracing::warn!(
+                    "stop_reason=ToolUse 인데 tool_use 블록이 없어 end_turn 으로 처리한다"
+                );
+                stop_reason = StopReason::EndTurn;
+            }
             if !assistant.content.is_empty() {
                 if !interrupted {
                     promote_final_thinking_to_text(&mut assistant.content, stop_reason);
@@ -152,13 +162,6 @@ impl Agent {
 
             // 4. 더 이상 도구 호출이 없으면 턴 종료.
             if stop_reason != StopReason::ToolUse {
-                return Ok(());
-            }
-
-            // 방어: stop_reason 이 ToolUse 인데 실제 tool_use 블록이 없으면(모델/어댑터 이상)
-            // 빈 tool_result 를 무한히 되돌리며 MaxIterations 까지 도는 대신 턴을 종료한다.
-            if assistant.tool_uses().next().is_none() {
-                tracing::warn!("stop_reason=ToolUse 인데 tool_use 블록이 없어 턴을 종료한다");
                 return Ok(());
             }
 
@@ -914,6 +917,53 @@ mod exec_tests {
             .run_turn(&mut session, "hi".into(), &NullObserver)
             .await;
         assert!(r.is_ok(), "expected Ok (turn ended), got {r:?}");
+    }
+
+    #[tokio::test]
+    async fn tool_use_stop_without_blocks_promotes_final_thinking_to_text() {
+        // 호환 백엔드가 reasoning 만 흘리고 finish_reason 만 tool_calls 로 잘못 끝내도,
+        // 실행할 structured tool_use 가 없으면 최종 답변으로 보존한다.
+        let provider = Arc::new(ScriptProvider {
+            events: vec![
+                StreamEvent::ThinkingDelta("try python3 next".into()),
+                StreamEvent::MessageStop {
+                    stop_reason: StopReason::ToolUse,
+                    usage: crate::message::Usage::default(),
+                },
+            ],
+        });
+        let agent = Agent {
+            provider,
+            tools: ToolRegistry::new(),
+            permissions: Arc::new(AllowGate),
+            context: Arc::new(NoopContextManager),
+            model: "m".into(),
+            system_prompt: String::new(),
+            max_tokens: 16,
+            effort: None,
+            max_tool_iterations: 5,
+            tool_ctx: ToolContext {
+                workdir: std::env::temp_dir(),
+                cancel: CancellationToken::new(),
+            },
+        };
+        let mut session = Session::new();
+        agent
+            .run_turn(&mut session, "hi".into(), &NullObserver)
+            .await
+            .expect("turn should end");
+        assert_eq!(session.messages.len(), 2);
+        let final_assistant = &session.messages[1];
+        assert!(final_assistant
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Thinking { text, .. }
+                if text == "try python3 next")));
+        assert!(final_assistant
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Text { text }
+                if text == "try python3 next")));
     }
 
     /// 매 호출마다 미리 정해둔 이벤트 시퀀스를 순서대로 흘리는 프로바이더(다중 이터레이션용).

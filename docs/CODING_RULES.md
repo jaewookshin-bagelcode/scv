@@ -193,6 +193,10 @@
 - 일부 호환 백엔드(Ollama 등)는 도구 결과 뒤 최종 `EndTurn` 에서 `content` 없이
   `reasoning` 만 줄 수 있다. 이때 scv 는 `tool_use` 중간 사고는 숨기되, 최종
   thinking-only 응답만 사용자-visible text 로 보존·표시한다.
+- 호환 백엔드가 `finish_reason="tool_calls"` 를 보내더라도 실제 structured
+  `delta.tool_calls`/`tool_use` 블록이 없으면 실행할 도구가 없는 **malformed 최종 응답**으로
+  보고 `EndTurn` 처럼 처리한다. `reasoning`/텍스트 안의 XML·함수 호출 비슷한 문자열을
+  파싱해 도구로 실행하지 않는다.
 
 ### Anthropic 어댑터 (대체)
 
