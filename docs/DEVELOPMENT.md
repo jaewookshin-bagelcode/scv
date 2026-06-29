@@ -41,7 +41,7 @@ sh scripts/scv-link.sh uninstall  # 링크 제거(설치한 스킬은 남김 —
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings   # 경고 0
 cargo test --workspace
-scripts/coverage.sh                                        # 티어별 커버리지(스캐폴드 단계는 미달 정상)
+scripts/coverage.sh                                        # 티어별 커버리지(unit≥95·integration≥78·e2e≥85, blocking)
 ```
 
 - 바뀐 동작은 **같은 변경 안에서 SSOT 문서**(ARCHITECTURE/ROADMAP/SETUP/CODING_RULES)에 반영.

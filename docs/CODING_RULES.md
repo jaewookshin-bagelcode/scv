@@ -225,7 +225,7 @@
   `ChunkDecoder`)과 trait 접근자 보일러플레이트, 네트워크 엣지(`web_fetch` 절단 등)는
   **설계상 unit 으로 검증**된다(§4.1 functional core / imperative shell). 이들을 통합으로
   다시 90% 까지 덮는 건 unit 의 중복이라 가치가 없어, 경계·플로우·에러처리로 정직하게 닿는
-  ~80% 를 반영해 **78%** 로 둔다. (스캐폴드 초기엔 이보다 낮을 수 있고, 그땐 실수치를
+  ~80% 를 반영해 **78%** 로 둔다. (테스트가 아직 얇은 구간에선 이보다 낮을 수 있고, 그땐 실수치를
   정직히 보고한다 — `.claude/skills/lint`.)
 - **`*_live.rs`(라이브 테스트)는 티어 측정에서 제외**한다(`scripts/coverage.sh`): 실제
   모델/네트워크가 필요해 기본 `#[ignore]` + 환경변수 게이트라 자동 게이트에서 **실행되지
@@ -267,12 +267,13 @@ SCV_COV_UNIT=80 scripts/coverage.sh # 임계 임시 조정(SCV_COV_INTEGRATION/S
   이 표를 따른다.
 - 측정 도중 **티어에 테스트 타깃이 하나도 없으면 그 티어는 미충족으로 실패**한다
   (예: 통합 테스트가 아직 없으면 integration 게이트는 추가 전까지 실패).
-- **측정 제외(분모에서 뺌)**: 테스트로 **실행 자체가 불가능**하거나 **아직 구현 전**인
-  경로는 `--ignore-filename-regex` 로 제외한다(`scripts/coverage.sh` 의 `EXCLUDE_RE`):
+- **측정 제외(분모에서 뺌)**: 테스트로 **실행 자체가 불가능**하거나 **아직 테스트가
+  없는** 경로는 `--ignore-filename-regex` 로 제외한다(`scripts/coverage.sh` 의 `EXCLUDE_RE`):
   `scv-cli/src/main.rs`(부트스트랩/조립), `scv-tui/src/`(인터랙티브 raw-mode 루프),
-  `scv-providers/src/anthropic.rs`(Phase 4 미구현 스텁). 이들은 단위/통합/e2e 어느
-  티어로도 운동시킬 수 없어 분모에 남으면 게이트를 영구 왜곡한다. 구현·테스트가
-  가능해지면 그 시점에 제외에서 빼 커버리지로 강제한다(예: Anthropic 어댑터는 4a 에서).
+  `scv-providers/src/anthropic.rs`(구현 완료이나 HTTP/SSE `stream` 경로 통합테스트 미작성
+  → 잠정 제외). main.rs·scv-tui 는 어느 티어로도 운동시킬 수 없고, anthropic 은 통합
+  테스트가 아직 없어 분모에 남으면 게이트를 왜곡한다. 테스트가 가능/작성되면 그 시점에
+  제외에서 빼 커버리지로 강제한다(Anthropic 은 HTTP `stream` 통합테스트 추가 시 해제).
 
 ## 11. 의존성 관리
 

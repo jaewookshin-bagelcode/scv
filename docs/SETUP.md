@@ -44,8 +44,10 @@ cargo build --release
 
 > 첫 빌드는 의존성 컴파일로 수 분 걸릴 수 있다. 이후엔 증분 빌드라 빠르다.
 >
-> 현재는 스캐폴드 단계다. 일부 함수는 `todo!()`/빈 스트림이며, 빌드는 통과하지만
-> 실제 LLM 호출/도구 실행은 아직 채워야 한다(우선순위는 `docs/ROADMAP.md` 참고).
+> 핵심 경로는 구현 완료다 — OpenAI·Anthropic·로컬 Ollama 어댑터의 `stream`, 도구
+> (`read`/`glob`/`grep`/`write`/`edit`/`bash`/`web_fetch`/`transcript_search`), 권한 게이트·
+> 세션 영속화·컨텍스트 압축이 모두 동작한다(코드에 `todo!()` 없음). 남은 작업/우선순위는
+> `docs/ROADMAP.md` 참고.
 
 ## 3. 설정
 

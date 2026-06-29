@@ -23,10 +23,10 @@ UNIT_MIN="${SCV_COV_UNIT:-95}"
 INT_MIN="${SCV_COV_INTEGRATION:-78}"
 E2E_MIN="${SCV_COV_E2E:-85}"
 
-# 커버 불가/미구현 경로는 분모에서 제외한다(SSOT: docs/CODING_RULES.md §10):
+# 커버 불가·미테스트 경로는 분모에서 제외한다(SSOT: docs/CODING_RULES.md §10):
 #   - scv-cli/src/main.rs : 부트스트랩/조립(테스트로 실행 불가)
 #   - scv-tui/src/        : 인터랙티브 TUI(raw-mode — 단위/통합 테스트 불가)
-#   - scv-providers/src/anthropic.rs : Phase 4 미구현 스텁
+#   - scv-providers/src/anthropic.rs : 구현 완료(순수 변환·디코더 단위테스트). HTTP/SSE stream 경로 통합테스트 미작성이라 잠정 제외
 # 구현·테스트가 가능해지면 해당 항목을 이 정규식에서 뺀다.
 EXCLUDE_RE='(scv-cli/src/main\.rs|scv-tui/src/|scv-providers/src/anthropic\.rs)'
 

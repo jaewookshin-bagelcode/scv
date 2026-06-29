@@ -363,6 +363,11 @@ Idle → Waiting → Thinking(ThinkingDelta) → Responding(TextDelta)
 **스피너 / ANSI 아트.** 출력이 아직 안 보이는 phase(Waiting/Thinking/RunningTool)에서
 스피너를 돌린다 — Braille `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`(유니코드), 미지원 터미널은 `|/-\`(ascii
 폴백, `[ui].spinner` 설정). 상태줄 예: `⠹ Running bash…  (4s · ctrl-c to interrupt)`.
+
+**도구 출력 표시.** 도구 결과(`ToolOutput.content`)는 모델 컨텍스트의 `tool_result` 로
+들어가는 동시에 `AgentEvent::ToolEnd { content, ... }` 로 TUI 에 전달된다. TUI 는 이를
+transcript 에 `[<tool> output]` 아래 줄 단위로 표시한다. 화면 폭주를 막기 위해 표시용 텍스트만
+길이 제한을 두며, 모델에게 전달되는 `tool_result` 원문은 바꾸지 않는다.
 색 출력은 `NO_COLOR` 를 존중한다. `Responding` 중엔 스피너 대신 스트리밍 텍스트를
 그대로 흘리고 끝에 캐럿(`▋`)만 둔다(스트림과 경쟁 금지).
 
@@ -437,7 +442,7 @@ enum StreamEvent {                          // 프로바이더 공통 정규화 
 
 enum AgentEvent {                           // 루프 → Observer 통지(관찰 전용, §4.5)
     Stream(StreamEvent),                    // 프로바이더 스트림 증분을 감쌈
-    ToolStart { name }, ToolEnd { name, is_error },  // 도구 실행 라이프사이클
+    ToolStart { name }, ToolEnd { name, content, is_error },  // 도구 실행 라이프사이클 + 화면용 출력
     PermissionAsked { name },               // Ask 도구가 권한 모달 대기
     Interrupted,                            // 사용자 인터럽트로 턴 중단(사후 통지)
 }
@@ -463,10 +468,12 @@ enum AgentEvent {                           // 루프 → Observer 통지(관찰
 | 세션 저장 백엔드 | `SessionStore` 구현(파일 → DB/원격) |
 | 권한 UX | `PermissionGate` 구현(정적 + 대화형 합성) |
 
-## 8. 다음 단계(스캐폴드 → 동작)
+## 8. 구현 현황과 다음 단계
 
-현재 저장소는 **타입·trait·조립 골격**까지 완성된 스캐폴드다. 일부 함수는
-`todo!()`/빈 스트림이며, 빌드는 통과하지만 실제 LLM 호출·도구 실행은 아직 채워야 한다.
+Phase 0–4 의 핵심 경로가 **구현 완료**다 — 프로바이더 `stream`(OpenAI·Anthropic·Ollama),
+도구(read/glob/grep/write/edit/bash/web_fetch/transcript_search), 권한 게이트, 인터랙티브
+TUI, 세션 영속화·재개, 컨텍스트 압축, 세션 격리가 모두 동작한다(코드에 `todo!()` 없음).
+남은 항목은 선택적 `4f`(Codex 런타임)뿐이다.
 
 동작하는 MVP 까지의 **구현 우선순위/순서는 [`ROADMAP.md`](./ROADMAP.md) 가 SSOT** 다
 (중복 방지 — 이 문서는 설계, ROADMAP 은 순서). 각 단계는 독립 테스트 가능하도록
