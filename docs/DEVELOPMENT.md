@@ -26,7 +26,8 @@ cargo run --bin scv               # 인터랙티브 TUI
 
 ```bash
 sh scripts/scv-link.sh install    # target/release/scv 를 PATH 에 링크(재빌드 시 자동 반영)
-sh scripts/scv-link.sh uninstall  # 링크 제거(설치한 스킬은 남김 — 사용자 데이터)
+sh scripts/scv-link.sh uninstall  # 링크 제거(전역 스킬·바이너리는 남김 — 사용자 데이터)
+sh scripts/scv-link.sh purge      # 링크 + 전역 스킬(~/.scv/skills) + 바이너리까지 완전 제거(-y 로 확인 생략)
 ```
 
 `install` 은 레포의 **기본 스킬**(`skills/<name>/SKILL.md` — 현재 `commit`·`review`)을

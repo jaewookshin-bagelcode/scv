@@ -5,12 +5,13 @@
 # (target/release/scv)를 가리키므로, 코드 수정 후 `cargo build --release` 만 다시 하면
 # 재설치 없이 링크가 최신 바이너리를 가리킨다.
 #
-# install 은 `skills/` 의 **기본 스킬**도 사용자 스킬 디렉터리로 복사한다(기존 것은 보존).
+# install 은 `skills/` 의 **기본 스킬**도 전역 스킬 디렉터리(~/.scv/skills)로 복사한다(기존 것은 보존).
 #
 # 사용:
-#   sh scripts/scv-link.sh install     # release 빌드 + 링크 생성 + 기본 스킬 설치(기본)
-#   sh scripts/scv-link.sh uninstall   # 링크 제거(설치한 스킬은 사용자 데이터라 남긴다)
-#   sh scripts/scv-link.sh status      # 링크/PATH 상태
+#   sh scripts/scv-link.sh install        # release 빌드 + 링크 생성 + 기본 스킬 설치(기본)
+#   sh scripts/scv-link.sh uninstall      # 링크 제거(전역 스킬은 사용자 데이터라 남긴다)
+#   sh scripts/scv-link.sh purge [-y]     # 링크 + 전역 스킬(~/.scv/skills) + release 바이너리까지 완전 제거
+#   sh scripts/scv-link.sh status         # 링크/PATH 상태
 #
 # bin 디렉터리 선택(우선순위): $SCV_BIN_DIR → PATH 에 있는 ~/.local/bin → PATH 에 있는
 #   ~/.cargo/bin → ~/.local/bin(없으면 PATH 추가 안내). 직접 지정: SCV_BIN_DIR=/path ...
@@ -57,8 +58,9 @@ on_path() {
     esac
 }
 
-# 레포의 기본 스킬(skills/<name>/SKILL.md)을 사용자 스킬 디렉터리로 복사한다.
-# **기존 스킬은 덮어쓰지 않는다**(사용자 편집 보존). scv 가 `/<name>` 으로 발동한다.
+# 레포의 기본 스킬(skills/<name>/SKILL.md)을 전역 스킬 디렉터리($SCV_SKILLS_DIR,
+# 기본 ~/.scv/skills)로 복사한다. **기존 스킬은 덮어쓰지 않는다**(사용자 편집 보존).
+# scv 가 `/<name>` 으로 발동한다.
 install_skills() {
     [ -d "$SKILLS_SRC" ] || return 0
     mkdir -p "$SKILLS_DEST"
@@ -105,6 +107,74 @@ case "$cmd" in
             echo "[scv] no symlink at $LINK (nothing to remove)"
         fi
         ;;
+    purge)
+        # uninstall 과 달리 사용자 데이터(스킬)와 빌드 산출물까지 전부 지운다.
+        # 되돌릴 수 없으므로 무엇을 지울지 먼저 보여주고 확인을 받는다(-y/--yes 로 생략).
+        assume_yes=false
+        case "${2:-}" in
+            -y|--yes) assume_yes=true ;;
+            "") ;;
+            *) echo "usage: sh scripts/scv-link.sh purge [-y|--yes]" >&2; exit 2 ;;
+        esac
+
+        # 1) 지울 대상을 수집·표시한다(스킬은 레포 skills/ 에 대응하는 설치본만).
+        found=false
+        echo "[scv] purge will remove:"
+        if [ -L "$LINK" ]; then
+            echo "  - link:    $LINK"
+            found=true
+        fi
+        if [ -e "$TARGET" ]; then
+            echo "  - binary:  $TARGET"
+            found=true
+        fi
+        if [ -d "$SKILLS_SRC" ] && [ -d "$SKILLS_DEST" ]; then
+            for dir in "$SKILLS_SRC"/*/; do
+                [ -f "$dir/SKILL.md" ] || continue
+                name=$(basename "$dir")
+                if [ -e "$SKILLS_DEST/$name" ]; then
+                    echo "  - skill:   $SKILLS_DEST/$name"
+                    found=true
+                fi
+            done
+        fi
+        if [ "$found" != true ]; then
+            echo "  (nothing found — already clean)"
+            exit 0
+        fi
+
+        # 2) 확인(비대화형은 -y/--yes).
+        if [ "$assume_yes" != true ]; then
+            printf '[scv] proceed? [y/N] '
+            read -r ans || ans=""
+            case "$ans" in
+                y|Y|yes|Yes|YES) ;;
+                *) echo "[scv] aborted (nothing removed)."; exit 0 ;;
+            esac
+        fi
+
+        # 3) 삭제.
+        if [ -L "$LINK" ]; then
+            rm -f "$LINK"
+            echo "[scv] removed link: $LINK"
+        fi
+        if [ -e "$TARGET" ]; then
+            rm -f "$TARGET"
+            echo "[scv] removed binary: $TARGET"
+        fi
+        if [ -d "$SKILLS_SRC" ] && [ -d "$SKILLS_DEST" ]; then
+            for dir in "$SKILLS_SRC"/*/; do
+                [ -f "$dir/SKILL.md" ] || continue
+                name=$(basename "$dir")
+                if [ -e "$SKILLS_DEST/$name" ]; then
+                    rm -rf "$SKILLS_DEST/$name"
+                    echo "[scv] removed skill: $name"
+                fi
+            done
+            # 스킬 디렉터리가 비었으면 같이 정리(다른 스킬이 남아 있으면 보존).
+            rmdir "$SKILLS_DEST" 2>/dev/null && echo "[scv] removed empty dir: $SKILLS_DEST" || true
+        fi
+        ;;
     status)
         if [ -L "$LINK" ]; then
             echo "[scv] link: $LINK -> $(readlink "$LINK")"
@@ -118,7 +188,7 @@ case "$cmd" in
         fi
         ;;
     *)
-        echo "usage: sh scripts/scv-link.sh [install|uninstall|status]" >&2
+        echo "usage: sh scripts/scv-link.sh [install|uninstall|purge|status]" >&2
         echo "  env: SCV_BIN_DIR (default: PATH 의 ~/.local/bin 또는 ~/.cargo/bin)" >&2
         echo "       SCV_SKILLS_DIR (default: ~/.scv/skills)" >&2
         exit 2

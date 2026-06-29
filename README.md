@@ -20,7 +20,8 @@ release 바이너리를 가리키므로 **코드 수정 후 `cargo build --relea
 ```bash
 sh scripts/scv-link.sh install      # release 빌드 + 링크 생성
 sh scripts/scv-link.sh status       # 링크/PATH 상태 확인
-sh scripts/scv-link.sh uninstall    # 링크 제거
+sh scripts/scv-link.sh uninstall    # 링크 제거(전역 스킬·바이너리는 보존)
+sh scripts/scv-link.sh purge        # 링크 + 전역 스킬(~/.scv/skills) + 바이너리까지 완전 제거(-y 로 확인 생략)
 ```
 
 - bin 디렉터리는 **PATH 에 이미 있는 곳을 자동 선택**한다(`~/.local/bin` → `~/.cargo/bin` 순,
