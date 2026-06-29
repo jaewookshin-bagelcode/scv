@@ -243,8 +243,12 @@ base_url = "https://generativelanguage.googleapis.com/v1beta/openai"   # 끝 슬
 ```
 
 ```bash
-export GEMINI_API_KEY=...             # aistudio.google.com 에서 발급
-scv --provider gemini "이 코드베이스 설명해줘"
+# 키 발급 후 등록 — 영구히 쓰려면 셸 프로필에 추가한다(새 셸마다 자동 로드)
+echo 'export GEMINI_API_KEY=...' >> ~/.zshrc && source ~/.zshrc
+# (OpenAI·Anthropic 등 다른 클라우드 키도 같은 방식으로 영구 등록)
+
+scv --provider gemini "이 코드베이스 설명해줘"                # config 의 gemini 모델로 실행(gemini-2.5-flash)
+scv --provider gemini --model gemini-3.5-flash "..."        # 다른 무료 모델을 직접 지정
 ```
 
 ### 클라우드 프로바이더로 전환
