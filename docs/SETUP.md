@@ -46,8 +46,18 @@ export SCV_LOG=info          # (선택) trace|debug|info|warn|error
 ```bash
 cp .env.example .env                  # .env 에 키를 채운다(커밋되지 않음). 또는 직접 export:
 export OPENAI_API_KEY="sk-..."        # --provider openai
-export ANTHROPIC_API_KEY="sk-ant-..." # --provider anthropic
+export ANTHROPIC_API_KEY="sk-ant-..." # --provider anthropic (직결, x-api-key)
 export GEMINI_API_KEY="..."           # --provider gemini (무료 티어, §4.1)
+```
+
+**aiproxy(사내 게이트웨이) 경유 Anthropic** — 개인 Anthropic 키 없이 사내 토큰으로 Sonnet/Haiku 를
+쓴다. `config.example.toml` 의 `aiproxy` 프로바이더(`kind="anthropic"` + `base_url` 끝 `/anthropic`
++ `auth_style="bearer"`)를 쓰고, 토큰만 환경변수로 주입한다:
+
+```bash
+codeb login --token aiproxy_xxx       # 토큰 발급/로그인(Cloudflare VPN + Okta 필요)
+export CODEB_TOKEN="aiproxy_xxx"       # config 의 api_key_env 가 이 변수를 Bearer 로 전송
+scv --provider aiproxy "..."          # --model claude-sonnet-4-6 | claude-haiku-4-5
 ```
 
 ### 3.2 config.toml

@@ -54,10 +54,25 @@ base_url = "https://api.openai.com/v1"
 [[providers]]
 id = "anthropic"
 kind = "anthropic"
-model = "claude-opus-4-8"          # 클라우드 대체
+model = "claude-opus-4-8"          # 직결 (api.anthropic.com)
 api_key_env = "ANTHROPIC_API_KEY"
 base_url = "https://api.anthropic.com"
 anthropic_version = "2023-06-01"
+# auth_style 생략 = 기본 x-api-key(직결). aiproxy 경유는 아래 참고.
+
+# aiproxy(사내 게이트웨이) 경유 Anthropic — Sonnet/Haiku.
+#   - base_url 끝에 /anthropic 를 붙인다 → {base_url}/v1/messages = .../anthropic/v1/messages
+#   - auth_style="bearer" → Authorization: Bearer <token>(게이트웨이가 실제 Anthropic 키 주입,
+#     x-api-key 미전송). 토큰 발급: codeb login (Cloudflare VPN + Okta). 자세히는 docs/SETUP.md.
+#   - api_key_env 는 프록시 토큰 환경변수 이름(CODEB_TOKEN; AI_PROXY_PERSONAL_TOKEN 도 호환).
+[[providers]]
+id = "aiproxy"
+kind = "anthropic"
+model = "claude-sonnet-4-6"        # 또는 claude-haiku-4-5
+api_key_env = "CODEB_TOKEN"
+base_url = "https://aiproxy-api.backoffice.bagelgames.com/anthropic"
+anthropic_version = "2023-06-01"
+auth_style = "bearer"
 
 # 기본 프로바이더 — 로컬 모델(Ollama, 무료·오프라인). kind="ollama" 면 OpenAI-호환 어댑터를
 # 재사용하되 로컬 기본 base_url(http://localhost:11434/v1)과 호환 모드(max_tokens·no

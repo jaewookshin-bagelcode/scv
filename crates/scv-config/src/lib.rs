@@ -118,6 +118,10 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
     #[serde(default)]
     pub anthropic_version: Option<String>,
+    /// 인증 헤더 방식(anthropic kind 전용). 생략/`"x-api-key"` = Anthropic 직결(`x-api-key`),
+    /// `"bearer"` = `Authorization: Bearer`(aiproxy 등 게이트웨이 경유). 다른 kind 는 무시.
+    #[serde(default)]
+    pub auth_style: Option<String>,
 }
 
 impl Config {
@@ -188,6 +192,40 @@ api_key_env = "OPENAI_API_KEY"
         assert_eq!(cfg.session.compact_threshold_tokens, 150_000);
         // [ui] 생략 시 spinner 기본값 "auto".
         assert_eq!(cfg.ui.spinner, "auto");
+    }
+
+    #[test]
+    fn provider_parses_auth_style_for_aiproxy() {
+        // aiproxy 경유 Anthropic: bearer 인증 + /anthropic 경로 + 프록시 토큰 env.
+        let toml_str = r#"
+default_provider = "aiproxy"
+[[providers]]
+id = "aiproxy"
+kind = "anthropic"
+model = "claude-sonnet-4-6"
+api_key_env = "CODEB_TOKEN"
+base_url = "https://aiproxy-api.backoffice.bagelgames.com/anthropic"
+auth_style = "bearer"
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse");
+        let p = cfg.default_provider().expect("provider");
+        assert_eq!(p.auth_style.as_deref(), Some("bearer"));
+        assert_eq!(p.kind, "anthropic");
+    }
+
+    #[test]
+    fn provider_auth_style_defaults_to_none() {
+        // 생략하면 None → 어댑터가 기본 x-api-key(직결)로 동작.
+        let toml_str = r#"
+default_provider = "anthropic"
+[[providers]]
+id = "anthropic"
+kind = "anthropic"
+model = "claude-opus-4-8"
+api_key_env = "ANTHROPIC_API_KEY"
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse");
+        assert!(cfg.default_provider().expect("provider").auth_style.is_none());
     }
 
     #[test]

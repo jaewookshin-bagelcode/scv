@@ -119,7 +119,7 @@ flowchart BT
         M["Message / ContentBlock / StreamEvent / CompletionRequest"]
     end
     O["OpenAiProvider<br/>기본=로컬 Ollama(localhost:11434) · OpenAI 클라우드<br/>POST /chat/completions (SSE)"]
-    A["AnthropicProvider<br/>POST /v1/messages (SSE)<br/>x-api-key, anthropic-version"]
+    A["AnthropicProvider<br/>POST {base}/v1/messages (SSE)<br/>x-api-key 또는 Bearer(aiproxy), anthropic-version"]
     O -- implements --> core
     A -- implements --> core
 ```
@@ -132,7 +132,8 @@ flowchart BT
 > 두 프로바이더 모두 공식 Rust SDK 가 없어 `reqwest` + `eventsource-stream` 으로
 > 직접 호출한다. 사고/효과·인증 헤더 등 프로바이더별 차이는 각 어댑터가 흡수한다
 > (예: Anthropic 은 `thinking: {type:"adaptive"}` + `output_config.effort`,
-> `x-api-key` 헤더 / OpenAI 는 `Authorization: Bearer` + 자체 reasoning 파라미터).
+> `x-api-key` 헤더(직결) 또는 `Authorization: Bearer`(aiproxy 게이트웨이 경유,
+> config `auth_style="bearer"`) / OpenAI 는 `Authorization: Bearer` + 자체 reasoning 파라미터).
 >
 > **토큰 카운트도 어댑터 책임이다** — `Provider::count_tokens` 를 어댑터별로 구현한다
 > (Anthropic: `/v1/messages/count_tokens`, OpenAI: 로컬 토크나이저 tiktoken). 단
@@ -142,10 +143,12 @@ flowchart BT
 새 프로바이더 추가 = `Provider` 한 개 구현 + `scv_providers::build` 에 `kind` 분기
 한 줄. 코어·도구·TUI 는 손대지 않는다.
 
-**인증 경로.** 어댑터는 **API 키**(OpenAI `Bearer`, Anthropic `x-api-key`)를 환경변수에서 읽는다.
-scv 는 "모델 토큰 스트림을 받아 자체 루프를 돌리는 것"이 핵심이라, 구독(ChatGPT/Codex) OAuth 를
-쓰려는 경우엔 **OpenAI-호환 게이트웨이/프록시**(`base_url` 만 가리키면 어댑터 변경 0, 루프·도구·
-권한 유지)를 1차 권장한다. Codex app-server 로 붙이는 길은 Codex 가 자체 도구·승인·루프를 돌려
+**인증 경로.** 어댑터는 **API 키**(OpenAI `Bearer`, Anthropic 직결 `x-api-key`)를 환경변수에서 읽는다.
+Anthropic 어댑터는 config `auth_style="bearer"` 로 `Authorization: Bearer` 모드로 전환할 수 있어
+**aiproxy(사내 게이트웨이) 경유**가 가능하다(`base_url` 에 `/anthropic` 까지 넣고 프록시 토큰을
+Bearer 로 전송 — 게이트웨이가 실제 Anthropic 키를 주입, 와이어 본문은 동일). scv 는 "모델 토큰
+스트림을 받아 자체 루프를 돌리는 것"이 핵심이라, 구독(ChatGPT/Codex) OAuth 를 쓰려는 경우엔
+**OpenAI-호환 게이트웨이/프록시**(`base_url` 만 가리키면 어댑터 변경 0, 루프·도구·권한 유지)를 1차 권장한다. Codex app-server 로 붙이는 길은 Codex 가 자체 도구·승인·루프를 돌려
 scv 가 "Codex 래퍼"가 되므로(정체성과 충돌) 기본 채택하지 않고 향후 옵션으로만 둔다 — 선택지·
 트레이드오프 상세는 ROADMAP §4e·§4f.
 
@@ -454,3 +457,14 @@ enum AgentEvent {                           // 루프 → Observer 통지(관찰
 
 Phase 0–4 핵심 경로가 **구현 완료**다(`todo!()` 없음) — 남은 것은 선택적 `4f`(Codex 런타임).
 구현 우선순위·순서·완료 상태는 [`ROADMAP.md`](./ROADMAP.md) 가 SSOT다(이 문서는 설계, ROADMAP 은 순서).
+
+**Phase 5 방향 — 서버사이드 기능 & 로컬/서버 트레이드오프(계획, 미구현).** 프로바이더를 좁히고
+(로컬 Ollama + aiproxy 경유 Anthropic 고정), 그 위에서 prompt caching·web_search·web_fetch·
+compaction 을 **서버 vs 로컬** 렌즈로 적용한다. 와이어를 Anthropic 하나로 고정하는 이유는 이
+기능들이 Anthropic 전용이라 변수 통제가 필요하기 때문이다. 핵심 트레이드오프 판단: caching·
+web_search 는 **서버**(본질상 서버 기능/외부 인덱스), web_fetch·compaction 은 **로컬 유지**
+(권한·감사·무손실 재조회·캐시 prefix 통제). 상세 순서는 [`ROADMAP.md`](./ROADMAP.md) Phase 5.
+
+> 본 문서 본문(§3 멀티프로바이더 인증·다이어그램, §4.1 캐시 prefix, §4.2 컨텍스트 관리, §4.3 툴)은
+> **현재 동작을 기술하는 SSOT** 이므로, Phase 5 각 항목은 **구현되는 시점에** 해당 절을 갱신한다
+> (미구현을 단정형으로 쓰지 않는다).

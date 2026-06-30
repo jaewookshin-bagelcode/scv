@@ -43,7 +43,7 @@ fn ollama_agent(
     permissions: Arc<dyn scv_core::tool::PermissionGate>,
     workdir: std::path::PathBuf,
 ) -> Agent {
-    let provider = scv_providers::build("ollama", model(), "ollama".to_string(), None)
+    let provider = scv_providers::build("ollama", model(), "ollama".to_string(), None, None)
         .expect("build ollama provider");
     Agent {
         provider,

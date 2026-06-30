@@ -6,8 +6,11 @@
 //! 에 둔다(functional core / imperative shell, CODING_RULES §4.1).
 //!
 //! 와이어 사양(요지):
-//! - 엔드포인트: `POST {base_url}/v1/messages`, 토큰 카운트는 `/v1/messages/count_tokens`
-//! - 헤더: `x-api-key`, `anthropic-version: 2023-06-01`, `content-type: application/json`
+//! - 엔드포인트: `POST {base_url}/v1/messages`, 토큰 카운트는 `/v1/messages/count_tokens`.
+//!   aiproxy 경유는 `base_url` 에 `/anthropic` 까지 넣어 `{base_url}/v1/messages` 가
+//!   `.../anthropic/v1/messages` 가 되게 한다.
+//! - 헤더: 직결은 `x-api-key`, 게이트웨이(aiproxy) 경유는 `Authorization: Bearer`
+//!   ([`AuthStyle`]) + `anthropic-version: 2023-06-01`, `content-type: application/json`
 //! - 본문(요청): `{ model, max_tokens, system, messages, tools, stream: true,
 //!     thinking: {type:"adaptive"}, output_config: {effort} }`
 //! - 와이어 차이(어댑터가 흡수): ① `system` 이 **최상위 필드**(OpenAI 는 messages[0])
@@ -43,17 +46,39 @@ use scv_core::{Error, Result};
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
+/// 인증 헤더 방식. 직결 Anthropic 은 `x-api-key`, aiproxy 등 게이트웨이는
+/// `Authorization: Bearer`(게이트웨이가 실제 Anthropic 키를 주입). 와이어 본문은 동일하다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthStyle {
+    /// `x-api-key: <key>` — api.anthropic.com 직결.
+    ApiKey,
+    /// `Authorization: Bearer <token>` — aiproxy 등 게이트웨이 경유.
+    Bearer,
+}
+
+impl AuthStyle {
+    /// 설정 문자열 → [`AuthStyle`]. `"bearer"`(대소문자 무시)만 Bearer, 생략(None)·그 외는
+    /// 기본 `ApiKey`(직결 호환).
+    pub fn from_config(s: Option<&str>) -> Self {
+        match s {
+            Some(v) if v.eq_ignore_ascii_case("bearer") => Self::Bearer,
+            _ => Self::ApiKey,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AnthropicProvider {
     model: String,
     api_key: String,
     base_url: String,
+    auth: AuthStyle,
     http: reqwest::Client,
     models: Vec<ModelInfo>,
 }
 
 impl AnthropicProvider {
-    pub fn new(model: String, api_key: String, base_url: Option<String>) -> Self {
+    pub fn new(model: String, api_key: String, base_url: Option<String>, auth: AuthStyle) -> Self {
         Self {
             model,
             api_key,
@@ -62,13 +87,34 @@ impl AnthropicProvider {
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
                 .trim_end_matches('/')
                 .to_string(),
+            auth,
             http: reqwest::Client::new(),
-            models: vec![ModelInfo {
-                id: "claude-opus-4-8".into(),
-                context_window: 1_000_000,
-                max_output_tokens: 128_000,
-                supports_thinking: true,
-            }],
+            // aiproxy 경유로 제한한 모델군(Sonnet/Haiku). 직결로 다른 모델을 쓰려면 config 의
+            // `model` 로 지정하면 되고, 이 목록은 능력 조회/검증용 메타데이터다.
+            // 주의: effort 파라미터는 Haiku 4.5 에서 400 → to_wire 가 effort 를 보내는 현재 구성에선
+            // Haiku 사용 시 thinking/effort 처리에 후속 보정이 필요(ROADMAP 5b).
+            models: vec![
+                ModelInfo {
+                    id: "claude-sonnet-4-6".into(),
+                    context_window: 1_000_000,
+                    max_output_tokens: 64_000,
+                    supports_thinking: true,
+                },
+                ModelInfo {
+                    id: "claude-haiku-4-5".into(),
+                    context_window: 200_000,
+                    max_output_tokens: 64_000,
+                    supports_thinking: true,
+                },
+            ],
+        }
+    }
+
+    /// 요청에 인증 헤더를 붙인다([`AuthStyle`] 에 따라 `x-api-key` 또는 `Authorization: Bearer`).
+    fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.auth {
+            AuthStyle::ApiKey => req.header("x-api-key", &self.api_key),
+            AuthStyle::Bearer => req.bearer_auth(&self.api_key),
         }
     }
 }
@@ -85,12 +131,13 @@ impl Provider for AnthropicProvider {
 
     async fn stream(&self, request: CompletionRequest) -> Result<EventStream> {
         let wire = to_wire(&request, true);
-        let resp = self
+        let req = self
             .http
             .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&wire)
+            .json(&wire);
+        let resp = self
+            .apply_auth(req)
             .send()
             .await
             .map_err(|e| Error::Provider(format!("request failed: {e}")))?;
@@ -123,12 +170,13 @@ impl Provider for AnthropicProvider {
         if !tools.is_empty() {
             body["tools"] = tools_to_wire(tools);
         }
-        let resp = self
+        let req = self
             .http
             .post(format!("{}/v1/messages/count_tokens", self.base_url))
-            .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
+            .json(&body);
+        let resp = self
+            .apply_auth(req)
             .send()
             .await
             .map_err(|e| Error::Provider(format!("count_tokens request failed: {e}")))?;
@@ -570,5 +618,29 @@ mod tests {
         assert_eq!(map_stop_reason("stop_sequence"), StopReason::StopSequence);
         assert_eq!(map_stop_reason("refusal"), StopReason::Refusal);
         assert_eq!(map_stop_reason("???"), StopReason::EndTurn);
+    }
+
+    #[test]
+    fn auth_style_from_config_defaults_to_api_key() {
+        // 생략·미지의 값 → ApiKey(직결 호환). "bearer"(대소문자 무시)만 Bearer.
+        assert_eq!(AuthStyle::from_config(None), AuthStyle::ApiKey);
+        assert_eq!(AuthStyle::from_config(Some("x-api-key")), AuthStyle::ApiKey);
+        assert_eq!(AuthStyle::from_config(Some("nonsense")), AuthStyle::ApiKey);
+        assert_eq!(AuthStyle::from_config(Some("bearer")), AuthStyle::Bearer);
+        assert_eq!(AuthStyle::from_config(Some("Bearer")), AuthStyle::Bearer);
+    }
+
+    #[test]
+    fn new_lists_sonnet_and_haiku_and_trims_base_url() {
+        let p = AnthropicProvider::new(
+            "claude-sonnet-4-6".into(),
+            "k".into(),
+            Some("https://aiproxy-api.example.com/anthropic/".into()),
+            AuthStyle::Bearer,
+        );
+        // 끝 슬래시 정규화 → `{base_url}/v1/messages` 가 이중 슬래시로 깨지지 않는다.
+        assert!(p.base_url.ends_with("/anthropic"));
+        let ids: Vec<&str> = p.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["claude-sonnet-4-6", "claude-haiku-4-5"]);
     }
 }

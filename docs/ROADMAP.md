@@ -12,7 +12,8 @@
 
 **Phase 0–4 구현 완료** — OpenAI·Anthropic·로컬 Ollama 로 한 턴이 end-to-end 로 흐르고(텍스트·
 도구 경로 모두, fake Provider 종단 테스트로 검증), 도구·권한·인터랙티브 TUI·세션 재개·컨텍스트
-압축·세션 격리까지 동작한다. 남은 것은 의도적으로 보류한 선택 작업 `4f`(Codex 런타임)뿐.
+압축·세션 격리까지 동작한다. 남은 것은 선택 작업 `4f`(Codex 런타임)와, **Phase 5 — 서버사이드 기능 &
+로컬/서버 트레이드오프**(아래)다.
 
 ## 현재 상태 (Phase 0–4 완료)
 
@@ -61,6 +62,20 @@
 - [x] **4d.** 설정 다단계 병합 — figment 레이어(기본값→사용자→프로젝트→`SCV_*`).
 - [x] **4e.** 인증 일반화 — `api_key_env` 선택(`Option`)이라 생략 시 무인증(로컬 Ollama out-of-box). OpenAI 키 + `base_url` 게이트웨이 경로 유지.
 
+## Phase 5 — 서버사이드 기능 & 로컬/서버 트레이드오프 (계획)
+
+프로바이더를 좁히고, 그 위에서 **서버사이드 vs 로컬 실행**의 트레이드오프를 기능별로 적용한다.
+초점은 폭이 아니라 "각 기능을 서버에 맡길지 로컬에 둘지"의 근거다.
+
+- [ ] **5a. 프로바이더 좁히기** — 로컬 Ollama(무인증 개발/CI) + 클라우드는 aiproxy 경유 Anthropic(Sonnet/Haiku) 하나로 고정. anthropic 어댑터에 Bearer 인증 모드(`auth_style`), `base_url`에 프록시 경로. 이후 단계의 전제(와이어를 Anthropic 하나로 고정해 변수 통제).
+- [ ] **5b. Prompt caching 실 활성화 + 비용 실측** — `to_wire` 가 `system`/`tools` prefix 에 `cache_control:{type:ephemeral}` 적재, 디코더가 `cache_creation/read_input_tokens` 를 `Usage` 에 채움. on/off 토큰·비용 비교. (**서버사이드 기능** — scv 는 마커·측정만.)
+- [ ] **5c. 서버사이드 도구용 루프 일반화** — `StopReason::PauseTurn` 추가, tool_use 를 로컬/서버 2범주로 디스패치(로컬만 실행, 서버 결과는 보존), pause 시 재전송 재개. 5d·5e 의 전제.
+- [ ] **5d. web_search 서버사이드** — `tools` 에 native `web_search_*` 툴 passthrough(서버 실행·인용). 로컬 도구와의 차이 = 라운드트립 없음·제어/투명성 낮음.
+- [ ] **5e. web_fetch 서버 vs 로컬 판단** — **로컬 유지** 결론(권한 게이트·사내망·감사) + 판단 기준 문서화.
+- [ ] **5f. compaction 서버 vs 로컬 비교** — **로컬 유지** 논증(소유·무손실 재조회·캐시 prefix 통제). 서버 context editing 은 5b 캐시를 깸(상호작용 주의).
+
+순서: 5a → 5b → 5c → 5d → 5e, 5f 병행. 5b 는 5a 직후 착수 가능, 5d·5e 는 5c 선행.
+
 ## 남은 작업 / 잔여
 
 - [ ] **4f. (보류) Codex 런타임 — 구독/워크스페이스 권한 경로.** ChatGPT/Codex 구독을 쓰려면
@@ -81,3 +96,4 @@
 | Phase 2 ✅ | 인터랙티브 TUI + 권한 확인 + Ctrl-C 인터럽트·진행 표시 + 세션 재개 |
 | Phase 3 ✅ | 긴 대화에서 컨텍스트 자동 관리 |
 | Phase 4 ✅ | 프로바이더 2개 + 프로젝트 컨텍스트 + 격리 |
+| Phase 5 🔜 | aiproxy-Anthropic 고정 + 프롬프트 캐싱 실측 + 서버사이드 web_search + 서버/로컬 트레이드오프 |

@@ -100,10 +100,15 @@ async fn main() -> anyhow::Result<()> {
         None => String::new(),
     };
 
-    // 3. 프로바이더 생성.
+    // 3. 프로바이더 생성. auth_style 은 anthropic kind 에서만 의미(bearer=aiproxy 경유).
     let model = cli.model.clone().unwrap_or_else(|| pconf.model.clone());
-    let provider =
-        scv_providers::build(&pconf.kind, model.clone(), api_key, pconf.base_url.clone())?;
+    let provider = scv_providers::build(
+        &pconf.kind,
+        model.clone(),
+        api_key,
+        pconf.base_url.clone(),
+        pconf.auth_style.as_deref(),
+    )?;
 
     // 4. 도구/스킬/권한 구성. --no-tools 면 빈 레지스트리(도구 스키마 미전송 → tool calling
     //    미지원 로컬 모델도 텍스트로 응답).
@@ -233,6 +238,7 @@ async fn main() -> anyhow::Result<()> {
                         pconf.model.clone(),
                         api_key,
                         pconf.base_url.clone(),
+                        pconf.auth_style.as_deref(),
                     )?;
                     Ok((provider, pconf.model.clone()))
                 };
