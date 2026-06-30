@@ -33,32 +33,27 @@ cargo build --release    # 릴리스(최적화 — 배포/벤치용)
 
 ### 3.1 환경변수 (로컬 모델 / API 키)
 
-기본 프로바이더는 **로컬 Ollama** 라 API 키·네트워크 없이 오프라인으로 돈다:
-
-```bash
-ollama serve                 # 데몬(이미 떠 있으면 생략) — https://ollama.com
-ollama pull qwen3.5:9b       # 기본 모델(tool calling 지원 — 코딩 에이전트에 필수)
-export SCV_LOG=info          # (선택) trace|debug|info|warn|error
-```
-
-클라우드로 전환할 때만 키를 둔다. 비밀은 **환경변수로만** 주입한다(설정 파일에 두지 않음):
-
-```bash
-cp .env.example .env                  # .env 에 키를 채운다(커밋되지 않음). 또는 직접 export:
-export OPENAI_API_KEY="sk-..."        # --provider openai
-export ANTHROPIC_API_KEY="sk-ant-..." # --provider anthropic (직결, x-api-key)
-export GEMINI_API_KEY="..."           # --provider gemini (무료 티어, §4.1)
-```
-
-**aiproxy(사내 게이트웨이) 경유 Anthropic** — 개인 Anthropic 키 없이 사내 토큰으로 Sonnet/Haiku 를
-쓴다. `config.example.toml` 의 `aiproxy` 프로바이더(`kind="anthropic"` + `base_url` 끝 `/anthropic`
-+ `auth_style="bearer"`)를 쓰고, 토큰만 환경변수로 주입한다:
+기본 프로바이더는 **aiproxy(사내 게이트웨이) 경유 Anthropic** 이다 — 개인 Anthropic 키 없이
+사내 토큰으로 Sonnet/Haiku 를 쓴다. **토큰만 환경변수로 주입하면 설정 파일 없이도 동작**한다
+(`default_provider` 기본값 = `aiproxy`, 내장 프로바이더 폴백). 비밀은 **환경변수로만** 주입한다:
 
 ```bash
 codeb login --token aiproxy_xxx       # 토큰 발급/로그인(Cloudflare VPN + Okta 필요)
-export CODEB_TOKEN="aiproxy_xxx"       # config 의 api_key_env 가 이 변수를 Bearer 로 전송
-scv --provider aiproxy "..."          # --model claude-sonnet-4-6 | claude-haiku-4-5
+export CODEB_TOKEN="aiproxy_xxx"       # api_key_env 가 이 변수를 Bearer 로 전송
+export SCV_LOG=info                    # (선택) trace|debug|info|warn|error
+scv "..."                             # 기본 aiproxy. --model claude-sonnet-4-6 | claude-haiku-4-5
 ```
+
+**로컬 Ollama**(선택) — 오프라인·무료. 키·네트워크가 필요 없다:
+
+```bash
+ollama serve                 # 데몬(이미 떠 있으면 생략) — https://ollama.com
+ollama pull qwen3.5:9b       # tool calling 지원 모델(코딩 에이전트에 필수)
+scv --provider ollama "..."  # 또는 config 의 default_provider = "ollama"
+```
+
+> 클라우드 와이어는 aiproxy 경유 Anthropic 하나로 고정했다(과제 1). OpenAI·Gemini·Anthropic
+> 직결 어댑터는 코드에 남아 있어 `config.example.toml` 의 주석을 풀면 쓸 수 있지만 기본 미노출.
 
 > **서버사이드 web_search**(선택): aiproxy 프로바이더에 `web_search = true` 를 주면(anthropic 전용)
 > 모델이 **서버에서** 웹 검색을 실행하고 결과·인용을 응답에 실어 보낸다(로컬 `web_fetch` 도구와
@@ -134,18 +129,16 @@ scv --help                            # 전체 플래그
 원샷 모드로 실제 모델을 호출해 확인한다.
 
 ```bash
-# 로컬 Ollama(기본) — 키·네트워크 불필요. 호환 모드라 --effort 무관하게 동작
+# aiproxy 경유 Anthropic(기본) — CODEB_TOKEN 만 있으면 됨
 scv "이 repo 구조를 한 문단으로 설명해줘"
+scv --model claude-haiku-4-5 "..."   # 저비용 모델로 전환
 
-# OpenAI — effort 가 reasoning_effort 로 매핑(low|medium|high|xhigh). 저비용: --model gpt-5.4-mini
-scv --provider openai --model gpt-5.5 "..."
-# 비-reasoning 모델(gpt-4o 등)은 reasoning_effort 를 거부(400) → --effort none 으로 끈다
-scv --provider openai --model gpt-4o --effort none "안녕, 한 줄로 자기소개"
+# 로컬 Ollama(선택) — 키·네트워크 불필요. 호환 모드라 --effort 무관하게 동작
+scv --provider ollama "이 repo 구조를 한 문단으로 설명해줘"
 
-# Gemini(무료 티어) — OpenAI-호환 엔드포인트. 로컬보다 지시 준수가 나아 무료 대안으로 안정적.
-# 키: https://aistudio.google.com → "Get API key"(카드 불필요). config 의 gemini 프로바이더 참고
-scv --provider gemini --model gemini-2.5-flash "..."
-# 무료 모델: gemini-2.5-flash | gemini-3.5-flash | *-flash-lite | gemma-4 (Pro 계열은 유료)
+# (기본 미노출) OpenAI·Gemini 직결: config.example.toml 의 해당 주석을 풀어야 쓸 수 있다.
+# scv --provider openai --model gpt-5.5 --effort high "..."    # 비-reasoning 모델은 --effort none
+# scv --provider gemini --model gemini-2.5-flash "..."
 ```
 
 - **다른 OpenAI-호환 게이트웨이**(사내·OpenRouter·로컬 LLM)는 `[[providers]].base_url` 로 붙인다.

@@ -20,8 +20,9 @@
 
 추가 설계 결정:
 - **언어/런타임**: Rust + Tokio(async)
-- **LLM 연동**: 멀티 프로바이더 추상. **기본은 로컬(Ollama, `qwen3.5:9b`)** — 무료·오프라인,
-  OpenAI(`gpt-5.5`)·Anthropic 은 `--provider openai|anthropic` 으로 전환 가능
+- **LLM 연동**: 멀티 프로바이더 추상이되 **둘로 좁힘**(온보딩 과제 1) — **기본은 aiproxy 경유
+  Anthropic(`claude-sonnet-4-6`)**, 로컬 Ollama(`qwen3.5:9b`)는 선택(`--provider ollama`).
+  설정 파일이 없어도 `CODEB_TOKEN` 만 있으면 동작(`default_provider` serde 기본값 = `aiproxy`).
 - **인터페이스**: 인터랙티브 CLI/TUI(원샷 모드도 지원)
 
 ## 2. 핵심 개념 — Agentic Loop
@@ -132,10 +133,13 @@ flowchart BT
     A -- implements --> core
 ```
 
-> **기본 프로바이더는 로컬 Ollama(모델 `qwen3.5:9b`)** 다 — OpenAI-호환 어댑터를 재사용하며
-> (`kind="ollama"`, `base_url` 자동 `localhost:11434/v1`, 추론 파라미터 미전송) 오프라인으로 돈다.
-> OpenAI(`gpt-5.5`)·Anthropic 은 `--provider openai|anthropic` 으로 전환해 쓰는
-> 클라우드 대체 프로바이더다.
+> **기본 프로바이더는 aiproxy 경유 Anthropic(모델 `claude-sonnet-4-6`)** 다 — `kind="anthropic"`,
+> `base_url` 끝 `/anthropic`, `auth_style="bearer"`. 설정 파일이 없어도 `CODEB_TOKEN` 만 있으면
+> 동작한다(내장 폴백). 로컬 **Ollama(`qwen3.5:9b`)는 선택**(`--provider ollama`) — OpenAI-호환
+> 어댑터를 재사용하며(`kind="ollama"`, `base_url` 자동 `localhost:11434/v1`, 추론 파라미터 미전송)
+> 키·네트워크 없이 오프라인으로 돈다. 클라우드 와이어는 과제 1에서 aiproxy 경유 Anthropic 하나로
+> 고정했고(변수 통제), OpenAI·Gemini·Anthropic 직결 어댑터는 코드에 남아 있으나 기본 설정에는
+> 노출하지 않는다(`config.example.toml` 주석 참고).
 >
 > 두 프로바이더 모두 공식 Rust SDK 가 없어 `reqwest` + `eventsource-stream` 으로
 > 직접 호출한다. 사고/효과·인증 헤더 등 프로바이더별 차이는 각 어댑터가 흡수한다

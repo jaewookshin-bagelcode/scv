@@ -4,8 +4,9 @@
 #   → CLI 플래그. 누락 파일은 건너뛴다.
 # API 키 같은 비밀은 여기 두지 말 것. 환경변수(.env)로만 주입한다.
 
-# 기본으로 사용할 프로바이더 id. [[providers]] 의 id 중 하나여야 한다.
-default_provider = "ollama"
+# 기본으로 사용할 프로바이더 id. 생략하면 aiproxy(내장 폴백) — 이 파일이 없어도 CODEB_TOKEN
+# 만 있으면 동작한다. 로컬 Ollama 로 쓰려면 "ollama" 로 바꾸거나 `--provider ollama`.
+default_provider = "aiproxy"
 
 # 에이전트 루프 동작
 [agent]
@@ -41,26 +42,12 @@ bash = "ask"
 spinner = "auto"          # auto(유니코드 감지) | unicode | ascii(|/-\ 폴백)
 # 색 출력은 NO_COLOR 환경변수를 존중한다(별도 설정 없음).
 
-# --- 프로바이더 정의 (멀티 프로바이더) ---
-# 기본은 로컬 모델(Ollama, qwen3.5:9b — 무료·오프라인). OpenAI/Anthropic 클라우드 모델은
-# --provider openai / --provider anthropic 로 전환해 쓴다.
-[[providers]]
-id = "openai"
-kind = "openai"
-model = "gpt-5.5"                  # 클라우드 대체 (GPT-5.5, 현재 공식 최신)
-api_key_env = "OPENAI_API_KEY"     # 키를 읽어올 환경변수 이름
-base_url = "https://api.openai.com/v1"
-
-[[providers]]
-id = "anthropic"
-kind = "anthropic"
-model = "claude-opus-4-8"          # 직결 (api.anthropic.com)
-api_key_env = "ANTHROPIC_API_KEY"
-base_url = "https://api.anthropic.com"
-anthropic_version = "2023-06-01"
-# auth_style 생략 = 기본 x-api-key(직결). aiproxy 경유는 아래 참고.
-
-# aiproxy(사내 게이트웨이) 경유 Anthropic — Sonnet/Haiku.
+# --- 프로바이더 정의 ---
+# scv 는 프로바이더를 둘로 좁힌다(온보딩 과제 1): 클라우드는 aiproxy 경유 Anthropic 하나로
+# 고정(기본), 로컬은 Ollama 하나(선택). 둘 다 내장 프로바이더라 이 블록을 통째로 지워도
+# `--provider aiproxy`/`--provider ollama` 가 동작한다 — 아래는 덮어쓰기/문서화용.
+#
+# [기본] aiproxy(사내 게이트웨이) 경유 Anthropic — Sonnet/Haiku.
 #   - base_url 끝에 /anthropic 를 붙인다 → {base_url}/v1/messages = .../anthropic/v1/messages
 #   - auth_style="bearer" → Authorization: Bearer <token>(게이트웨이가 실제 Anthropic 키 주입,
 #     x-api-key 미전송). 토큰 발급: codeb login (Cloudflare VPN + Okta). 자세히는 docs/SETUP.md.
@@ -76,12 +63,10 @@ auth_style = "bearer"
 # web_search = true                # 서버사이드 web_search(anthropic 전용). 모델이 서버에서
 #                                  # 검색을 실행하고 결과·인용을 응답에 실어 보낸다. 기본 off.
 
-# 기본 프로바이더 — 로컬 모델(Ollama, 무료·오프라인). kind="ollama" 면 OpenAI-호환 어댑터를
-# 재사용하되 로컬 기본 base_url(http://localhost:11434/v1)과 호환 모드(max_tokens·no
-# stream_options·no reasoning_effort)를 자동 적용한다. (별도 어댑터가 아니라 재사용.)
-# qwen3.5:9b 는 tool calling 을 지원해 코딩 에이전트(read/edit/bash 등)에 적합하다.
-# api_key_env 를 생략하면 무인증으로 동작한다 → 키·환경변수 없이 out-of-box.
-#   ollama serve && ollama pull qwen3.5:9b
+# [선택] 로컬 Ollama — 무료·오프라인. kind="ollama" 면 OpenAI-호환 어댑터를 재사용하되 로컬
+# 기본 base_url(http://localhost:11434/v1)과 호환 모드(max_tokens·no stream_options·no
+# reasoning_effort)를 자동 적용한다. qwen3.5:9b 는 tool calling 을 지원해 코딩 에이전트에 적합.
+# api_key_env 를 생략하면 무인증(키 없이 out-of-box).  ollama serve && ollama pull qwen3.5:9b
 [[providers]]
 id = "ollama"
 kind = "ollama"
@@ -89,16 +74,28 @@ model = "qwen3.5:9b"
 # api_key_env 생략 = 무인증(Ollama 는 키를 요구하지 않는다).
 # base_url = "http://localhost:11434/v1"   # 생략하면 kind="ollama" 가 이 값을 기본 사용
 
-# Gemini (Google AI Studio) — OpenAI-호환 엔드포인트, 무료 티어(Flash 계열).
-# kind="openai-compat" 면 와이어 호환 모드(reasoning_effort·stream_options 미전송)로 보낸다.
-# function calling·streaming 지원 → 코딩 에이전트에 사용 가능(로컬 모델 대비 지시 준수 양호).
-# 무료 모델: gemini-2.5-flash | gemini-3.5-flash | *-flash-lite | gemma-4 (Pro 계열은 유료).
-# 키 발급: https://aistudio.google.com → "Get API key"(카드 불필요) 후 export GEMINI_API_KEY=...
-[[providers]]
-id = "gemini"
-kind = "openai-compat"
-model = "gemini-2.5-flash"
-api_key_env = "GEMINI_API_KEY"
-# 끝 슬래시 없이 적는다(끝에 /chat/completions 가 붙음). scv 가 끝 슬래시를 제거해 주지만
-# 정규 형태로 둔다.
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+# --- 기타 프로바이더(기본 미노출) ---
+# 과제 1에서 클라우드 와이어를 aiproxy 경유 Anthropic 하나로 고정했다(변수 통제). 아래 어댑터는
+# 코드에 남아 있어 필요하면 주석을 풀어 쓸 수 있지만, 기본 설정에는 노출하지 않는다.
+#
+# [[providers]]                    # Anthropic 직결(api.anthropic.com, x-api-key)
+# id = "anthropic"
+# kind = "anthropic"
+# model = "claude-opus-4-8"
+# api_key_env = "ANTHROPIC_API_KEY"
+# base_url = "https://api.anthropic.com"
+# anthropic_version = "2023-06-01"
+#
+# [[providers]]                    # OpenAI 직결
+# id = "openai"
+# kind = "openai"
+# model = "gpt-5.5"
+# api_key_env = "OPENAI_API_KEY"
+# base_url = "https://api.openai.com/v1"
+#
+# [[providers]]                    # Gemini(OpenAI-호환 엔드포인트, 무료 티어)
+# id = "gemini"
+# kind = "openai-compat"
+# model = "gemini-2.5-flash"
+# api_key_env = "GEMINI_API_KEY"
+# base_url = "https://generativelanguage.googleapis.com/v1beta/openai"

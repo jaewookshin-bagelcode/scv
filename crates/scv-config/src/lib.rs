@@ -27,6 +27,10 @@ pub enum ConfigError {
 /// 최상위 설정.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    /// 기본 프로바이더 id. **생략 시 `aiproxy`**(사내 게이트웨이 경유 Anthropic) — 설정 파일이
+    /// 전혀 없어도 `CODEB_TOKEN` 만 있으면 동작한다(내장 폴백, [`Self::resolve_provider`]).
+    /// 로컬 Ollama 는 선택지로, `--provider ollama` 또는 이 값을 `"ollama"` 로 바꿔 쓴다.
+    #[serde(default = "default_provider_id")]
     pub default_provider: String,
     #[serde(default)]
     pub agent: AgentConfig,
@@ -205,6 +209,13 @@ impl Config {
     }
 }
 
+/// `default_provider` 의 serde 기본값. 설정 파일이 없거나 키를 생략하면 사내 게이트웨이
+/// 경유 Anthropic(`aiproxy`)을 기본으로 한다 — 토큰만으로 동작(out-of-box). 로컬 Ollama 는
+/// 선택지(`--provider ollama`).
+fn default_provider_id() -> String {
+    "aiproxy".into()
+}
+
 /// 설정 없이도 토큰/데몬만으로 동작하는 내장 프로바이더 id.
 pub const BUILTIN_PROVIDER_IDS: &[&str] = &["ollama", "aiproxy"];
 
@@ -263,6 +274,19 @@ api_key_env = "OPENAI_API_KEY"
         assert_eq!(cfg.session.compact_threshold_tokens, 150_000);
         // [ui] 생략 시 spinner 기본값 "auto".
         assert_eq!(cfg.ui.spinner, "auto");
+    }
+
+    #[test]
+    fn default_provider_falls_back_to_aiproxy() {
+        // default_provider 를 생략하면 aiproxy(내장 폴백) — 설정 파일 없이 토큰만으로 동작.
+        let cfg: Config = toml::from_str("").expect("parse empty");
+        assert_eq!(cfg.default_provider, "aiproxy");
+        // 내장 폴백으로 해석되어 bearer/anthropic 으로 동작한다.
+        let p = cfg.resolve_provider("aiproxy").expect("builtin aiproxy");
+        assert_eq!(p.kind, "anthropic");
+        assert_eq!(p.auth_style.as_deref(), Some("bearer"));
+        // ollama 는 선택지로 여전히 해석 가능.
+        assert!(cfg.resolve_provider("ollama").is_some());
     }
 
     #[test]
