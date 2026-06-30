@@ -247,11 +247,28 @@ fn to_wire(req: &CompletionRequest, stream: bool, web_search: bool) -> Value {
     // 추론: 4.6+ 는 thinking:{type:"adaptive"} + output_config.effort(budget_tokens 미사용).
     if req.thinking != ThinkingMode::Disabled {
         body["thinking"] = json!({ "type": "adaptive" });
+        // effort 는 일부 모델(Haiku 4.5·구 Sonnet 등)에서 400 → 지원 모델에만 보낸다([`supports_effort`]).
         if let Some(effort) = req.effort {
-            body["output_config"] = json!({ "effort": map_effort(effort) });
+            if supports_effort(&req.model) {
+                body["output_config"] = json!({ "effort": map_effort(effort) });
+            }
         }
     }
     body
+}
+
+/// 이 모델이 `output_config.effort` 를 지원하는가(ROADMAP 5b 후속).
+///
+/// effort 는 Opus 4.5+/Sonnet 4.6/Fable 에서 동작하고 **Haiku 4.5·구 Sonnet(4.5)·Claude 3·2 에선
+/// 400** 이다(claude-api 레퍼런스). `to_wire` 가 항상 effort 를 보내므로, 미지원 모델엔 생략해야
+/// 한다. 미지원이 **확인된** 모델 패턴을 아래 목록에 모아 자동 분류하고, 그 외(신규·Opus·Sonnet
+/// 4.6+)는 지원으로 간주한다(생략보다 보냄이 안전 — 미지원을 새로 확인하면 패턴 한 줄 추가).
+/// 미지원으로 잘못 분류돼 생략돼도 모델은 기본 깊이로 동작할 뿐 에러는 안 난다(보수적 안전).
+fn supports_effort(model: &str) -> bool {
+    // 부분 문자열 매칭(대소문자 무시). "haiku" 는 모든 haiku 세대를 미지원으로 본다(현재 정책).
+    const EFFORT_UNSUPPORTED: &[&str] = &["haiku", "sonnet-4-5", "claude-3", "claude-2"];
+    let m = model.to_ascii_lowercase();
+    !EFFORT_UNSUPPORTED.iter().any(|pat| m.contains(pat))
 }
 
 /// 코어 Effort → Anthropic `output_config.effort`(low|medium|high). xhigh/max 는 high 로 클램프.
@@ -702,6 +719,35 @@ mod tests {
         assert_eq!(map_stop_reason("stop_sequence"), StopReason::StopSequence);
         assert_eq!(map_stop_reason("refusal"), StopReason::Refusal);
         assert_eq!(map_stop_reason("???"), StopReason::EndTurn);
+    }
+
+    #[test]
+    fn supports_effort_classifies_known_models() {
+        // 지원: Opus·Sonnet 4.6·Fable. 미지원: Haiku·구 Sonnet(4.5)·Claude 3/2.
+        assert!(supports_effort("claude-sonnet-4-6"));
+        assert!(supports_effort("claude-opus-4-8"));
+        assert!(supports_effort("claude-fable-5"));
+        assert!(!supports_effort("claude-haiku-4-5"));
+        assert!(!supports_effort("claude-haiku-4-5-20251001"));
+        assert!(!supports_effort("claude-sonnet-4-5"));
+        assert!(!supports_effort("claude-3-5-sonnet-20241022"));
+    }
+
+    #[test]
+    fn to_wire_omits_effort_for_unsupported_model() {
+        // Haiku 모델은 effort 가 400 이므로 output_config 를 보내지 않는다(thinking 은 유지).
+        let mut r = req(vec![Message::user("hi")], vec![]);
+        r.model = "claude-haiku-4-5".into();
+        let wire = to_wire(&r, true, false);
+        assert_eq!(wire["thinking"]["type"], "adaptive");
+        assert!(
+            wire.get("output_config").is_none(),
+            "Haiku 엔 effort 가 빠져야 한다: {wire}"
+        );
+        // 지원 모델(Sonnet 4.6)은 effort 를 보낸다.
+        let mut s = req(vec![Message::user("hi")], vec![]);
+        s.model = "claude-sonnet-4-6".into();
+        assert_eq!(to_wire(&s, true, false)["output_config"]["effort"], "high");
     }
 
     #[test]
