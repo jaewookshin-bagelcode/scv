@@ -12,8 +12,9 @@
 
 **Phase 0–4 구현 완료** — OpenAI·Anthropic·로컬 Ollama 로 한 턴이 end-to-end 로 흐르고(텍스트·
 도구 경로 모두, fake Provider 종단 테스트로 검증), 도구·권한·인터랙티브 TUI·세션 재개·컨텍스트
-압축·세션 격리까지 동작한다. 남은 것은 선택 작업 `4f`(Codex 런타임)와, **Phase 5 — 서버사이드 기능 &
-로컬/서버 트레이드오프**(아래)다.
+압축·세션 격리까지 동작한다. **Phase 5(서버사이드 기능 & 로컬/서버 트레이드오프)** 도 완료됐다
+(aiproxy-Anthropic·캐싱·pause_turn·web_search·web_fetch/compaction 판단). 남은 것은 선택 작업
+`4f`(Codex 런타임)와 Phase 5 의 follow 항목(citations 표시·서버블록 보존)뿐이다.
 
 ## 현재 상태 (Phase 0–4 완료)
 
@@ -62,17 +63,19 @@
 - [x] **4d.** 설정 다단계 병합 — figment 레이어(기본값→사용자→프로젝트→`SCV_*`).
 - [x] **4e.** 인증 일반화 — `api_key_env` 선택(`Option`)이라 생략 시 무인증(로컬 Ollama out-of-box). OpenAI 키 + `base_url` 게이트웨이 경로 유지.
 
-## Phase 5 — 서버사이드 기능 & 로컬/서버 트레이드오프 (계획)
+## Phase 5 — 서버사이드 기능 & 로컬/서버 트레이드오프 (완료)
 
-프로바이더를 좁히고, 그 위에서 **서버사이드 vs 로컬 실행**의 트레이드오프를 기능별로 적용한다.
-초점은 폭이 아니라 "각 기능을 서버에 맡길지 로컬에 둘지"의 근거다.
+프로바이더를 좁히고, 그 위에서 **서버사이드 vs 로컬 실행**의 트레이드오프를 기능별로 적용했다.
+초점은 폭이 아니라 "각 기능을 서버에 맡길지 로컬에 둘지"의 근거다. 6개 항목 모두 aiproxy 로
+**실측·검증**됨. 남은 follow(미구현): 서버사이드 web_search/web_fetch 의 citations 구조적 표시,
+다중검색 `pause_turn` 시 `server_tool_use` 블록 보존(ContentBlock 확장).
 
 - [ ] **5a. 프로바이더 좁히기** — 로컬 Ollama(무인증 개발/CI) + 클라우드는 aiproxy 경유 Anthropic(Sonnet/Haiku) 하나로 고정. anthropic 어댑터에 Bearer 인증 모드(`auth_style`), `base_url`에 프록시 경로. 이후 단계의 전제(와이어를 Anthropic 하나로 고정해 변수 통제).
 - [x] **5b. Prompt caching 실 활성화 + 비용 실측** — `to_wire` 가 `system` 블록에 `cache_control:{type:ephemeral}` 적재(렌더 순서 tools→system→messages 이므로 tools+system 안정 prefix 를 함께 캐시), 디코더가 `cache_creation/read_input_tokens` → `Usage`, observer 가 in/out/cache 토큰 표시. **실측(aiproxy Sonnet, 동일 prefix 2회)**: 1회차 cache_write 4707·read 0 → 2회차 read 4707·write 0(~0.1x). (**서버사이드 기능** — scv 는 마커·측정만.)
 - [x] **5c. 서버사이드 도구용 루프 일반화** — `StopReason::PauseTurn` 추가(+anthropic `map_stop_reason`). `run_turn` 이 stop_reason 을 ToolUse(로컬 실행)/PauseTurn(로컬·user 추가 없이 히스토리 재전송 재개, iteration 상한이 무한 pause 방지)/그 외(종료) 3갈래로 분기. 서버 tool_use 블록 보존(ContentBlock 확장)은 5d 에서 와이어와 함께. 5d·5e 의 전제.
 - [x] **5d. web_search 서버사이드** — `ProviderConfig.web_search`(anthropic 전용) → `to_wire` 가 native `web_search_20250305` 서버툴을 tools 에 주입. 모델이 **서버에서** 검색 실행, 결과·인용을 같은 응답에 실어 보냄(로컬 도구의 tool_use→tool_result 왕복 없음). **라이브 검증**(aiproxy Sonnet, `--no-tools`로 격리): 실시간 BTC 시세를 다중 출처로 회신. *follow*: citations 구조적 표시·다중검색 `pause_turn` 시 서버블록 보존(ContentBlock 확장)은 미구현.
 - [x] **5e. web_fetch 서버 vs 로컬 — 비교·측정 후 판단** — 두 경로 실측(aiproxy): 서버 web_fetch(`web_fetch_20250910`·`_20260209`)도 프록시로 동작 확인(왕복 0, 단 권한 게이트·사내망 불가), 로컬은 `Ask`·사내망·감사 통제. 축별 비교표 + 판단 기준 → **결론(측정에서 도출)**: web_fetch 는 통제 가치가 커 **로컬 기본**, 서버는 공개 URL 대량 처리용 opt-in 토글로 추가 가능(미구현). 상세 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §4.3.
-- [ ] **5f. compaction 서버 vs 로컬 — 비교·측정 후 판단** — 로컬 전략(`Clear`/`Summarizing`) vs Anthropic 서버사이드 context editing/memory 를 토큰·손실·캐시 prefix 상호작용·프로바이더 종속성 축으로 **비교 측정**하고 근거와 함께 판단. 서버 context editing ↔ 5b 캐시 prefix 상호작용 주의. *(결론은 측정 후 도출.)*
+- [x] **5f. compaction 서버 vs 로컬 — 비교·측정 후 판단** — 측정(aiproxy): 서버 context editing(`clear_tool_uses_20250919`)·compaction(`compact_20260112`) 둘 다 프록시로 **동작 확인**(가짜 베타 거부로 `anthropic-beta` passthrough 입증 — §0 미확정 해소). 축별 비교(가용성·제어·무손실·비용·캐시 상호작용) → **결론(도출)**: 투명·무손실 재조회·**캐시 prefix 통제**(서버 편집은 5b 캐시 무효화)·프로바이더 독립성 때문에 **로컬 기본**, 서버는 매우 긴 Anthropic 전용 대화용 옵션 여지. 상세 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §4.2.
 
 순서: 5a → 5b → 5c → 5d → 5e, 5f 병행. 5b 는 5a 직후 착수 가능, 5d·5e 는 5c 선행.
 
@@ -96,4 +99,4 @@
 | Phase 2 ✅ | 인터랙티브 TUI + 권한 확인 + Ctrl-C 인터럽트·진행 표시 + 세션 재개 |
 | Phase 3 ✅ | 긴 대화에서 컨텍스트 자동 관리 |
 | Phase 4 ✅ | 프로바이더 2개 + 프로젝트 컨텍스트 + 격리 |
-| Phase 5 🔜 | aiproxy-Anthropic 고정 + 프롬프트 캐싱 실측 + 서버사이드 web_search + 서버/로컬 트레이드오프 |
+| Phase 5 ✅ | aiproxy-Anthropic + 프롬프트 캐싱 실측 + pause_turn 루프 + 서버사이드 web_search + web_fetch/compaction 서버vs로컬 판단 |
