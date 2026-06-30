@@ -67,10 +67,19 @@ impl Observer for StreamObserver {
                 let _ = std::io::stdout().flush();
             }
             AgentEvent::Stream(StreamEvent::MessageStop { stop_reason, usage }) => {
-                println!(
-                    "\n— stop: {stop_reason:?}, out_tokens: {}",
-                    usage.output_tokens
+                // in/out + 캐시 토큰(쓰기·읽기)까지 노출 → 프롬프트 캐싱 비용 실측(ROADMAP 5b).
+                // 캐시 미사용/미지원 프로바이더는 cache_* 가 0 이라 표시되지 않는다.
+                let mut line = format!(
+                    "\n— stop: {stop_reason:?}, in: {}, out: {}",
+                    usage.input_tokens, usage.output_tokens
                 );
+                if usage.cache_read_tokens > 0 || usage.cache_write_tokens > 0 {
+                    line.push_str(&format!(
+                        ", cache_read: {}, cache_write: {}",
+                        usage.cache_read_tokens, usage.cache_write_tokens
+                    ));
+                }
+                println!("{line}");
             }
             AgentEvent::ToolStart { name } => print!("\n[tool: {name}] "),
             AgentEvent::ToolEnd {

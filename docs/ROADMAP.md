@@ -68,7 +68,7 @@
 초점은 폭이 아니라 "각 기능을 서버에 맡길지 로컬에 둘지"의 근거다.
 
 - [ ] **5a. 프로바이더 좁히기** — 로컬 Ollama(무인증 개발/CI) + 클라우드는 aiproxy 경유 Anthropic(Sonnet/Haiku) 하나로 고정. anthropic 어댑터에 Bearer 인증 모드(`auth_style`), `base_url`에 프록시 경로. 이후 단계의 전제(와이어를 Anthropic 하나로 고정해 변수 통제).
-- [ ] **5b. Prompt caching 실 활성화 + 비용 실측** — `to_wire` 가 `system`/`tools` prefix 에 `cache_control:{type:ephemeral}` 적재, 디코더가 `cache_creation/read_input_tokens` 를 `Usage` 에 채움. on/off 토큰·비용 비교. (**서버사이드 기능** — scv 는 마커·측정만.)
+- [x] **5b. Prompt caching 실 활성화 + 비용 실측** — `to_wire` 가 `system` 블록에 `cache_control:{type:ephemeral}` 적재(렌더 순서 tools→system→messages 이므로 tools+system 안정 prefix 를 함께 캐시), 디코더가 `cache_creation/read_input_tokens` → `Usage`, observer 가 in/out/cache 토큰 표시. **실측(aiproxy Sonnet, 동일 prefix 2회)**: 1회차 cache_write 4707·read 0 → 2회차 read 4707·write 0(~0.1x). (**서버사이드 기능** — scv 는 마커·측정만.)
 - [ ] **5c. 서버사이드 도구용 루프 일반화** — `StopReason::PauseTurn` 추가, tool_use 를 로컬/서버 2범주로 디스패치(로컬만 실행, 서버 결과는 보존), pause 시 재전송 재개. 5d·5e 의 전제.
 - [ ] **5d. web_search 서버사이드** — `tools` 에 native `web_search_*` 툴 passthrough(서버 실행·인용). 로컬 도구와의 차이 = 라운드트립 없음·제어/투명성 낮음.
 - [ ] **5e. web_fetch 서버 vs 로컬 판단** — **로컬 유지** 결론(권한 게이트·사내망·감사) + 판단 기준 문서화.

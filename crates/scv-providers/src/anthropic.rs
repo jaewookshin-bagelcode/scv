@@ -208,8 +208,17 @@ fn to_wire(req: &CompletionRequest, stream: bool) -> Value {
     if stream {
         body["stream"] = json!(true);
     }
+    // 프롬프트 캐싱(ROADMAP 5b): system 을 텍스트 블록 배열로 보내고 끝에 cache_control 을 단다.
+    // 렌더 순서가 tools → system → messages 이므로 system 끝의 브레이크포인트 하나가
+    // **tools + system** 안정 prefix 를 함께 캐시한다(턴마다 재전송되는 고정 prefix → 2번째
+    // 호출부터 cache_read ~0.1x). prefix 가 1바이트라도 바뀌면 무효화되므로 system·tool 순서를
+    // 결정적으로 유지한다(BTreeMap 직렬화). 최소 캐시 prefix 미만이면 조용히 캐시 안 됨(에러 아님).
     if let Some(system) = &req.system {
-        body["system"] = json!(system);
+        body["system"] = json!([{
+            "type": "text",
+            "text": system,
+            "cache_control": { "type": "ephemeral" },
+        }]);
     }
     if !req.tools.is_empty() {
         body["tools"] = tools_to_wire(&req.tools);
@@ -402,8 +411,16 @@ impl AnthropicDecoder {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
-                if let Some(n) = v["message"]["usage"]["input_tokens"].as_u64() {
+                let usage = &v["message"]["usage"];
+                if let Some(n) = usage["input_tokens"].as_u64() {
                     self.usage.input_tokens = n;
+                }
+                // 프롬프트 캐싱 측정(ROADMAP 5b): 캐시 기록(write, ~1.25x)·적중(read, ~0.1x) 토큰.
+                if let Some(n) = usage["cache_creation_input_tokens"].as_u64() {
+                    self.usage.cache_write_tokens = n;
+                }
+                if let Some(n) = usage["cache_read_input_tokens"].as_u64() {
+                    self.usage.cache_read_tokens = n;
                 }
                 out.push(StreamEvent::MessageStart { model });
             }
@@ -498,7 +515,10 @@ mod tests {
         }]);
         let wire = to_wire(&req(vec![Message::user("hi"), assistant], vec![]), true);
         assert_eq!(wire["model"], "claude-opus-4-8");
-        assert_eq!(wire["system"], "be terse");
+        // system 은 cache_control 을 단 텍스트 블록 배열(프롬프트 캐싱, 5b).
+        assert_eq!(wire["system"][0]["type"], "text");
+        assert_eq!(wire["system"][0]["text"], "be terse");
+        assert_eq!(wire["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(wire["stream"], true);
         assert_eq!(wire["thinking"]["type"], "adaptive");
         // Max effort → high 로 클램프.
@@ -542,6 +562,26 @@ mod tests {
             out.extend(d.decode(e));
         }
         out
+    }
+
+    #[test]
+    fn decodes_cache_tokens_from_message_start() {
+        // 프롬프트 캐싱(5b): message_start.usage 의 cache_creation/read → Usage 의 write/read.
+        let events = vec![
+            json!({ "type": "message_start", "message": { "model": "claude-sonnet-4-6", "usage": {
+                "input_tokens": 10, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 2048
+            } } }),
+            json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, "usage": { "output_tokens": 7 } }),
+            json!({ "type": "message_stop" }),
+        ];
+        match decode_all(&events).last().unwrap() {
+            StreamEvent::MessageStop { usage, .. } => {
+                assert_eq!(usage.cache_read_tokens, 2048);
+                assert_eq!(usage.cache_write_tokens, 0);
+                assert_eq!(usage.input_tokens, 10);
+            }
+            other => panic!("expected MessageStop, got {other:?}"),
+        }
     }
 
     #[test]

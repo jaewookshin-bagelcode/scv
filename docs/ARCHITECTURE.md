@@ -196,6 +196,14 @@ OpenAI — 구조가 달라 어댑터가 재배치:
 이 순서는 **프롬프트 캐시(prefix-match)** 를 위한 것이다. 앞부분이 고정돼야 캐시가
 히트한다. `cwd`/날짜 같은 가변값을 맨 앞에 끼우면 캐시가 매번 깨진다.
 
+**캐시 활성화(Anthropic, ROADMAP 5b).** Anthropic 어댑터의 `to_wire` 가 `system` 블록에
+`cache_control:{type:"ephemeral"}` 를 단다. 와이어 렌더 순서가 `tools → system → messages`
+이므로 이 브레이크포인트 하나가 **tools + system** 안정 prefix 를 함께 캐시한다 — 턴마다
+재전송되는 고정 prefix 가 2번째 호출부터 `cache_read`(~0.1×)로 처리된다. 디코더가
+`cache_creation/read_input_tokens` 를 [`Usage`](#6-데이터-모델-요약) 에 채워 비용 실측에 노출.
+최소 캐시 prefix(모델별 ~2–4K 토큰) 미만이면 조용히 캐시되지 않는다(에러 아님). OpenAI/Ollama
+어댑터는 해당 없음.
+
 **프로젝트 컨텍스트(3) 로딩 — AGENTS.md 탐색 체인.** scv 가 대상 프로젝트에서 시동할 때
 `ProjectContextLoader` 가 진입 컨텍스트 문서를 찾아 합성한다. **새 파일 포맷을 만들지
 않고 다른 에이전트 도구와 같은 파일(`AGENTS.md`)을 그대로 읽어** 호환된다 — 이미 다른
