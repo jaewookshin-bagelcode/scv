@@ -160,11 +160,65 @@ impl Config {
         PathBuf::from("./.scv/config.toml")
     }
 
-    /// 기본 프로바이더 설정을 찾는다.
+    /// 기본 프로바이더 설정을 찾는다(설정 파일에 있는 것만; 내장 폴백은 [`Self::resolve_provider`]).
     pub fn default_provider(&self) -> Option<&ProviderConfig> {
         self.providers
             .iter()
             .find(|p| p.id == self.default_provider)
+    }
+
+    /// id 로 프로바이더를 해석한다. 설정 파일의 `[[providers]]` 를 우선 찾고, 없으면 잘 알려진
+    /// **내장 프로바이더**([`builtin_provider`])로 폴백한다 — 덕분에 `~/.scv/config.toml` 에
+    /// 항목이 없어도 `--provider aiproxy`(또는 `ollama`)가 토큰만으로 동작한다(out-of-box).
+    /// 설정 파일에서 같은 id 를 정의하면 그쪽이 내장값을 덮는다.
+    pub fn resolve_provider(&self, id: &str) -> Option<ProviderConfig> {
+        self.providers
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .or_else(|| builtin_provider(id))
+    }
+
+    /// 설정에 정의된 id + 내장 id 의 합집합(중복 제거, 설정 순서 우선). TUI `/provider` 전환 목록용.
+    pub fn known_provider_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.providers.iter().map(|p| p.id.clone()).collect();
+        for &b in BUILTIN_PROVIDER_IDS {
+            if !ids.iter().any(|id| id == b) {
+                ids.push(b.to_string());
+            }
+        }
+        ids
+    }
+}
+
+/// 설정 없이도 토큰/데몬만으로 동작하는 내장 프로바이더 id.
+pub const BUILTIN_PROVIDER_IDS: &[&str] = &["ollama", "aiproxy"];
+
+/// 잘 알려진 내장 프로바이더 정의. 비밀은 담지 않고 `api_key_env`(읽어올 환경변수 이름)만 둔다.
+/// - `ollama`: 로컬 무인증(데몬만 띄우면 동작).
+/// - `aiproxy`: 사내 게이트웨이 경유 Anthropic — `CODEB_TOKEN` 만 있으면 동작(Bearer 인증,
+///   base_url 끝 `/anthropic`, 기본 모델 Sonnet 4.6).
+fn builtin_provider(id: &str) -> Option<ProviderConfig> {
+    match id {
+        "ollama" => Some(ProviderConfig {
+            id: "ollama".into(),
+            kind: "ollama".into(),
+            model: "qwen3.5:9b".into(),
+            api_key_env: None,
+            base_url: None,
+            anthropic_version: None,
+            auth_style: None,
+        }),
+        "aiproxy" => Some(ProviderConfig {
+            id: "aiproxy".into(),
+            kind: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+            api_key_env: Some("CODEB_TOKEN".into()),
+            base_url: Some("https://aiproxy-api.backoffice.bagelgames.com/anthropic".into()),
+            anthropic_version: Some("2023-06-01".into()),
+            auth_style: Some("bearer".into()),
+        }),
+        _ => None,
     }
 }
 
@@ -225,7 +279,11 @@ model = "claude-opus-4-8"
 api_key_env = "ANTHROPIC_API_KEY"
 "#;
         let cfg: Config = toml::from_str(toml_str).expect("parse");
-        assert!(cfg.default_provider().expect("provider").auth_style.is_none());
+        assert!(cfg
+            .default_provider()
+            .expect("provider")
+            .auth_style
+            .is_none());
     }
 
     #[test]
@@ -258,6 +316,61 @@ spinner = "ascii"
     fn unknown_default_provider_resolves_to_none() {
         let cfg: Config = toml::from_str("default_provider = \"missing\"\n").expect("parse");
         assert!(cfg.default_provider().is_none());
+    }
+
+    #[test]
+    fn resolve_provider_falls_back_to_builtin_aiproxy() {
+        // config 에 aiproxy 항목이 없어도 내장 폴백으로 해석된다 → 토큰만 있으면 동작.
+        let cfg: Config = toml::from_str("default_provider = \"ollama\"\n").expect("parse");
+        let p = cfg.resolve_provider("aiproxy").expect("builtin aiproxy");
+        assert_eq!(p.kind, "anthropic");
+        assert_eq!(p.auth_style.as_deref(), Some("bearer"));
+        assert_eq!(p.api_key_env.as_deref(), Some("CODEB_TOKEN"));
+        assert!(p.base_url.as_deref().unwrap().ends_with("/anthropic"));
+        assert_eq!(p.model, "claude-sonnet-4-6");
+        // ollama 도 내장(무인증).
+        assert!(cfg
+            .resolve_provider("ollama")
+            .unwrap()
+            .api_key_env
+            .is_none());
+        // 미지의 id 는 None.
+        assert!(cfg.resolve_provider("nope").is_none());
+    }
+
+    #[test]
+    fn resolve_provider_config_overrides_builtin() {
+        // 같은 id 를 config 에서 정의하면 내장값을 덮는다.
+        let toml_str = r#"
+default_provider = "aiproxy"
+[[providers]]
+id = "aiproxy"
+kind = "anthropic"
+model = "claude-haiku-4-5"
+api_key_env = "AI_PROXY_PERSONAL_TOKEN"
+base_url = "https://custom.example.com/anthropic"
+auth_style = "bearer"
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse");
+        let p = cfg.resolve_provider("aiproxy").expect("configured aiproxy");
+        assert_eq!(p.model, "claude-haiku-4-5"); // config 값
+        assert_eq!(p.api_key_env.as_deref(), Some("AI_PROXY_PERSONAL_TOKEN"));
+    }
+
+    #[test]
+    fn known_provider_ids_unions_builtins_without_dupes() {
+        let toml_str = r#"
+default_provider = "ollama"
+[[providers]]
+id = "ollama"
+kind = "ollama"
+model = "qwen3.5:9b"
+"#;
+        let cfg: Config = toml::from_str(toml_str).expect("parse");
+        let ids = cfg.known_provider_ids();
+        // ollama 는 config 에 있으니 한 번만, aiproxy 는 내장이라 추가됨.
+        assert_eq!(ids.iter().filter(|i| *i == "ollama").count(), 1);
+        assert!(ids.contains(&"aiproxy".to_string()));
     }
 
     #[test]

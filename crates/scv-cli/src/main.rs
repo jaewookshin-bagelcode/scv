@@ -87,11 +87,13 @@ async fn main() -> anyhow::Result<()> {
     // 1. 설정 로드.
     let config = scv_config::Config::load().context("설정 로드 실패")?;
     let provider_id = cli.provider.as_deref().unwrap_or(&config.default_provider);
-    let pconf = config
-        .providers
-        .iter()
-        .find(|p| p.id == provider_id)
-        .with_context(|| format!("프로바이더 `{provider_id}` 설정 없음"))?;
+    // 설정 파일에 없으면 내장 프로바이더(ollama·aiproxy)로 폴백 → 토큰만 있으면 동작.
+    let pconf = config.resolve_provider(provider_id).with_context(|| {
+        format!(
+            "프로바이더 `{provider_id}` 설정 없음(내장: {:?})",
+            scv_config::BUILTIN_PROVIDER_IDS
+        )
+    })?;
 
     // 2. 비밀(API 키)은 환경변수에서만 읽는다. `api_key_env` 가 없으면 무인증
     //    (로컬 Ollama 등 키가 필요 없는 백엔드 — ROADMAP 4e). 키 없이 바로 동작한다.
@@ -217,16 +219,13 @@ async fn main() -> anyhow::Result<()> {
             // App 이 agent.permissions 를 대화형 게이트로 감싸 Ask 도구를 모달로 승인받는다.
             // `/provider`·`/model` 슬래시 명령으로 실행 중 전환할 수 있게, 프로바이더 빌드
             // 팩토리(설정·키 접근은 합성 루트만 가능)와 사용 가능한 프로바이더 목록을 주입한다.
-            let provider_ids: Vec<String> = config.providers.iter().map(|p| p.id.clone()).collect();
+            // 내장 프로바이더(aiproxy·ollama)도 전환 목록에 노출 → config 에 없어도 /provider 로 선택 가능.
+            let provider_ids: Vec<String> = config.known_provider_ids();
             let make_provider =
                 |id: &str| -> scv_core::Result<(Arc<dyn scv_core::provider::Provider>, String)> {
-                    let pconf = config
-                        .providers
-                        .iter()
-                        .find(|p| p.id == id)
-                        .ok_or_else(|| {
-                            scv_core::Error::Provider(format!("프로바이더 `{id}` 설정 없음"))
-                        })?;
+                    let pconf = config.resolve_provider(id).ok_or_else(|| {
+                        scv_core::Error::Provider(format!("프로바이더 `{id}` 설정 없음"))
+                    })?;
                     let api_key = match pconf.api_key_env.as_deref() {
                         Some(env) => std::env::var(env).map_err(|_| {
                             scv_core::Error::Provider(format!("환경변수 `{env}` 미설정"))
