@@ -114,7 +114,7 @@ cargo install --path crates/scv-cli   # 대안: 복사본(--force 로 재설치)
 ```bash
 cd /path/to/your/project              # 작업 대상 프로젝트(= cwd)
 scv                                   # 인터랙티브 TUI
-scv "이 코드베이스 구조를 설명해줘"        # 원샷 — 기본 로컬 ollama(qwen3.5:9b)
+scv "이 코드베이스 구조를 설명해줘"        # 원샷 — 기본 aiproxy Anthropic
 scv --provider openai --model gpt-5.5 "..."   # 프로바이더/모델 전환
 scv --resume <session-id>             # 세션 재개
 scv --help                            # 전체 플래그

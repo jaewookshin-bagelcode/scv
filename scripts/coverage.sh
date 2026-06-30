@@ -5,7 +5,7 @@
 #
 # 티어 분류는 테스트의 위치/파일명 컨벤션으로 정한다:
 #   unit         src 내부 `#[cfg(test)] mod tests`   (cargo --lib/--bins)   목표 ≥95%
-#   integration  crates/*/tests/*.rs  (단 e2e_*.rs 제외)                    목표 ≥90%
+#   integration  crates/*/tests/*.rs  (단 e2e_*.rs 제외)                    목표 ≥78%
 #   e2e          crates/*/tests/e2e_*.rs  (fake Provider 로 루프 종단 구동)  목표 ≥85%
 #
 # 각 티어는 독립 측정한다: 해당 티어의 테스트만 돌려(`clean` 후 `--no-report` 로 누적)

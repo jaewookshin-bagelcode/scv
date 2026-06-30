@@ -8,7 +8,8 @@ scv 에 기여하거나 소스에서 빌드/실행하는 사람을 위한 문서
 
 - Rust 툴체인은 `rust-toolchain.toml` 로 **1.96.0 고정**(전원 동일 버전, edition 2021). 설정·설치 세부는
   [`SETUP.md`](./SETUP.md) §1.
-- 기본 프로바이더는 로컬 Ollama(`qwen3.5:9b`) — 키 없이 동작. 클라우드는 환경변수 키.
+- 기본 프로바이더는 aiproxy 경유 Anthropic(`claude-sonnet-4-6`) — `CODEB_TOKEN` 으로 동작.
+  로컬 Ollama(`qwen3.5:9b`)는 키 없이 쓰는 오프라인 대체.
 
 ## 빌드 / 개발 중 실행
 
