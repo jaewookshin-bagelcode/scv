@@ -73,6 +73,10 @@ impl std::fmt::Debug for Agent {
     }
 }
 
+/// 서버사이드 도구의 `pause_turn` 재개 최대 횟수(ROADMAP 5c). 한 턴에서 서버 도구가 이보다
+/// 많이 일시정지하면 부분 결과를 남기고 종료한다(무한 pause·과금 방지).
+const MAX_PAUSE_TURN_RESUMES: usize = 3;
+
 impl Agent {
     /// 사용자 입력 한 건을 처리하고, 턴이 끝나면 세션을 갱신한다.
     ///
@@ -87,6 +91,9 @@ impl Agent {
         let cancel = &self.tool_ctx.cancel;
         // compaction 트리거 신호: 직전 응답의 입력 토큰 수(MessageStop usage). 첫 턴은 0.
         let mut last_input_tokens: u64 = 0;
+        // 서버사이드 도구의 pause_turn 재개 횟수(ROADMAP 5c). 한도 초과 시 턴을 종료해
+        // 무한 일시정지·과금을 막는다(max_tool_iterations 와 별개의 보수적 상한).
+        let mut pause_resumes: usize = 0;
 
         for iteration in 0..self.max_tool_iterations {
             // 협조적 취소 ①: 이터레이션 진입부 체크포인트.
@@ -175,8 +182,19 @@ impl Agent {
                         observer.on_event(&AgentEvent::Interrupted).await;
                         return Err(Error::Cancelled);
                     }
+                    // pause_turn 재개 한도(3). 초과하면 그동안 보존된 부분 응답을 남기고 턴을
+                    // 정상 종료한다(무한 일시정지·과금 방지).
+                    pause_resumes += 1;
+                    if pause_resumes > MAX_PAUSE_TURN_RESUMES {
+                        tracing::warn!(
+                            pause_resumes,
+                            "pause_turn 재개 한도({MAX_PAUSE_TURN_RESUMES}) 초과 — 턴 종료"
+                        );
+                        return Ok(());
+                    }
                     tracing::debug!(
                         iteration,
+                        pause_resumes,
                         "pause_turn — 히스토리 재전송으로 서버사이드 턴 재개"
                     );
                     continue;
@@ -431,6 +449,25 @@ impl MessageAssembler {
                 }
                 // open 이 tool_use 가 아니면 무시한다(정상 흐름에선 발생하지 않음).
             }
+            // 서버사이드 도구 블록(web_search 등)은 완성된 채로 온다 → 열린 블록을 닫고 그대로
+            // 보존 push 한다(pause_turn 재개 시 재전송용, ROADMAP 5d).
+            StreamEvent::ServerToolUse { id, name, input } => {
+                self.close_open();
+                self.blocks
+                    .push(ContentBlock::ServerToolUse { id, name, input });
+            }
+            StreamEvent::ServerToolResult {
+                tool_use_id,
+                result_type,
+                content,
+            } => {
+                self.close_open();
+                self.blocks.push(ContentBlock::ServerToolResult {
+                    tool_use_id,
+                    result_type,
+                    content,
+                });
+            }
             StreamEvent::ContentBlockStop => self.close_open(),
             // MessageStart/MessageStop 은 루프가 직접 처리한다(여기선 무시).
             _ => {}
@@ -649,6 +686,32 @@ mod tests {
         ]);
         assert_eq!(blocks.len(), 1);
         assert!(matches!(&blocks[0], ContentBlock::ToolUse { input, .. } if input == &json!({})));
+    }
+
+    #[test]
+    fn assembler_preserves_server_tool_blocks() {
+        // 서버툴 완성 이벤트는 열린 텍스트를 닫고 ContentBlock 으로 보존된다(pause_turn 재전송용).
+        let blocks = apply_all(vec![
+            StreamEvent::TextDelta("searching".into()),
+            StreamEvent::ServerToolUse {
+                id: "srv_1".into(),
+                name: "web_search".into(),
+                input: json!({ "q": "x" }),
+            },
+            StreamEvent::ServerToolResult {
+                tool_use_id: "srv_1".into(),
+                result_type: "web_search_tool_result".into(),
+                content: json!([]),
+            },
+        ]);
+        assert_eq!(blocks.len(), 3);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "searching"));
+        assert!(
+            matches!(&blocks[1], ContentBlock::ServerToolUse { name, .. } if name == "web_search")
+        );
+        assert!(
+            matches!(&blocks[2], ContentBlock::ServerToolResult { result_type, .. } if result_type == "web_search_tool_result")
+        );
     }
 }
 
@@ -1155,6 +1218,27 @@ mod exec_tests {
             &session.messages[2].content[0],
             ContentBlock::Text { text } if text == "done"
         ));
+    }
+
+    #[tokio::test]
+    async fn pause_turn_resume_cap_stops_turn() {
+        // 서버 도구가 매 응답마다 pause_turn → 무한 재개 대신 MAX_PAUSE_TURN_RESUMES(3) 후 Ok 종료
+        // (iteration 캡보다 pause 캡이 먼저 걸리게 max_tool_iterations 를 크게 둔다).
+        let provider = Arc::new(ScriptProvider {
+            events: vec![
+                StreamEvent::TextDelta("searching".into()),
+                stop(StopReason::PauseTurn),
+            ],
+        });
+        let mut agent = agent_with_provider(provider, ToolRegistry::new());
+        agent.max_tool_iterations = 10;
+        let mut session = Session::new();
+        agent
+            .run_turn(&mut session, "go".into(), &NullObserver)
+            .await
+            .expect("pause 캡 초과 시 Ok 로 종료");
+        // user + assistant×4(재개 1·2·3 통과, 4번째 pause 에서 한도 초과 종료) = 5.
+        assert_eq!(session.messages.len(), 5);
     }
 
     #[tokio::test]

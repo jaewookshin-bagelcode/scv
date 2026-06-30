@@ -316,6 +316,17 @@ fn block_to_wire(block: &ContentBlock) -> Option<Value> {
         } => Some(json!({
             "type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error,
         })),
+        // 서버사이드 도구 블록: pause_turn 재개 시 받은 그대로 다시 보낸다(ROADMAP 5d/5c).
+        ContentBlock::ServerToolUse { id, name, input } => Some(json!({
+            "type": "server_tool_use", "id": id, "name": name, "input": input,
+        })),
+        ContentBlock::ServerToolResult {
+            tool_use_id,
+            result_type,
+            content,
+        } => Some(json!({
+            "type": result_type, "tool_use_id": tool_use_id, "content": content,
+        })),
         ContentBlock::Thinking { .. } => None,
     }
 }
@@ -421,6 +432,10 @@ async fn drive_stream(mut st: StreamState) -> Option<(Result<StreamEvent>, Strea
 /// `usage` 는 `message_start`/`message_delta` 에 나눠 와서 마지막 `MessageStop` 에 합친다.
 struct AnthropicDecoder {
     tool_ids: HashMap<u64, String>,
+    /// 서버사이드 도구(web_search 등) 누적: index → (id, name, 누적 input json). 서버 tool_use 의
+    /// 입력은 tool_use 처럼 `input_json_delta` 로 흘러오므로 모았다가 `content_block_stop` 에서
+    /// 완성해 [`StreamEvent::ServerToolUse`] 로 낸다(pause_turn 재개용 보존, ROADMAP 5d).
+    server_tools: HashMap<u64, (String, String, String)>,
     stop: StopReason,
     usage: Usage,
 }
@@ -429,6 +444,7 @@ impl AnthropicDecoder {
     fn new() -> Self {
         Self {
             tool_ids: HashMap::new(),
+            server_tools: HashMap::new(),
             stop: StopReason::EndTurn,
             usage: Usage::default(),
         }
@@ -465,11 +481,31 @@ impl AnthropicDecoder {
             "content_block_start" => {
                 let index = v["index"].as_u64().unwrap_or(0);
                 let block = &v["content_block"];
-                if block["type"].as_str() == Some("tool_use") {
-                    let id = block["id"].as_str().unwrap_or_default().to_string();
-                    let name = block["name"].as_str().unwrap_or_default().to_string();
-                    self.tool_ids.insert(index, id.clone());
-                    out.push(StreamEvent::ToolUseStart { id, name });
+                match block["type"].as_str() {
+                    Some("tool_use") => {
+                        let id = block["id"].as_str().unwrap_or_default().to_string();
+                        let name = block["name"].as_str().unwrap_or_default().to_string();
+                        self.tool_ids.insert(index, id.clone());
+                        out.push(StreamEvent::ToolUseStart { id, name });
+                    }
+                    // 서버 도구 호출: id/name 만 받고 input 은 이후 delta 로 누적(stop 에서 emit).
+                    Some("server_tool_use") => {
+                        let id = block["id"].as_str().unwrap_or_default().to_string();
+                        let name = block["name"].as_str().unwrap_or_default().to_string();
+                        self.server_tools.insert(index, (id, name, String::new()));
+                    }
+                    // 서버 도구 결과: content 가 시작 이벤트에 통째로 온다 → 그대로 보존.
+                    Some(t) if t.ends_with("_tool_result") => {
+                        out.push(StreamEvent::ServerToolResult {
+                            tool_use_id: block["tool_use_id"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string(),
+                            result_type: t.to_string(),
+                            content: block["content"].clone(),
+                        });
+                    }
+                    _ => {}
                 }
             }
             "content_block_delta" => {
@@ -488,18 +524,32 @@ impl AnthropicDecoder {
                     }
                     "input_json_delta" => {
                         if let Some(p) = delta["partial_json"].as_str() {
-                            let id = self.tool_ids.get(&index).cloned().unwrap_or_default();
-                            out.push(StreamEvent::ToolUseInputDelta {
-                                id,
-                                partial_json: p.to_string(),
-                            });
+                            if let Some(entry) = self.server_tools.get_mut(&index) {
+                                entry.2.push_str(p); // 서버툴 input 누적(emit 안 함; stop 에서 완성)
+                            } else {
+                                let id = self.tool_ids.get(&index).cloned().unwrap_or_default();
+                                out.push(StreamEvent::ToolUseInputDelta {
+                                    id,
+                                    partial_json: p.to_string(),
+                                });
+                            }
                         }
                     }
                     // signature_delta 등은 코어 이벤트로 표현하지 않으므로 무시.
                     _ => {}
                 }
             }
-            "content_block_stop" => out.push(StreamEvent::ContentBlockStop),
+            "content_block_stop" => {
+                let index = v["index"].as_u64().unwrap_or(0);
+                if let Some((id, name, input_json)) = self.server_tools.remove(&index) {
+                    // 서버 도구 호출 완성 — 누적 input 을 파싱해 보존 블록으로 낸다(빈/깨짐 → 빈 객체).
+                    let input = serde_json::from_str(&input_json)
+                        .unwrap_or_else(|_| Value::Object(Default::default()));
+                    out.push(StreamEvent::ServerToolUse { id, name, input });
+                } else {
+                    out.push(StreamEvent::ContentBlockStop);
+                }
+            }
             "message_delta" => {
                 if let Some(sr) = v["delta"]["stop_reason"].as_str() {
                     self.stop = map_stop_reason(sr);
@@ -708,6 +758,59 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn decodes_and_preserves_server_tool_blocks() {
+        // 서버 도구(web_search): server_tool_use 의 input 을 delta 로 모아 ServerToolUse 로,
+        // web_search_tool_result 는 시작 이벤트에서 ServerToolResult 로 보존(pause_turn 재개용).
+        let events = vec![
+            json!({ "type": "message_start", "message": { "model": "m", "usage": { "input_tokens": 1 } } }),
+            json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "server_tool_use", "id": "srv_1", "name": "web_search" } }),
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"query\":" } }),
+            json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "\"rust\"}" } }),
+            json!({ "type": "content_block_stop", "index": 0 }),
+            json!({ "type": "content_block_start", "index": 1, "content_block": { "type": "web_search_tool_result", "tool_use_id": "srv_1", "content": [{ "title": "R" }] } }),
+            json!({ "type": "content_block_stop", "index": 1 }),
+            json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, "usage": { "output_tokens": 2 } }),
+            json!({ "type": "message_stop" }),
+        ];
+        let out = decode_all(&events);
+        assert!(
+            out.iter().any(|e| matches!(e,
+                StreamEvent::ServerToolUse { id, name, input }
+                if id == "srv_1" && name == "web_search" && input["query"] == "rust")),
+            "ServerToolUse(input 파싱)가 보존돼야: {out:?}"
+        );
+        assert!(
+            out.iter().any(|e| matches!(e,
+                StreamEvent::ServerToolResult { tool_use_id, result_type, .. }
+                if tool_use_id == "srv_1" && result_type == "web_search_tool_result")),
+            "ServerToolResult 가 보존돼야: {out:?}"
+        );
+    }
+
+    #[test]
+    fn server_tool_blocks_round_trip_through_block_to_wire() {
+        // 보존한 서버툴 블록은 받은 그대로 다시 직렬화돼야 한다(pause_turn 재전송).
+        let w = block_to_wire(&ContentBlock::ServerToolUse {
+            id: "srv_1".into(),
+            name: "web_search".into(),
+            input: json!({ "query": "rust" }),
+        })
+        .unwrap();
+        assert_eq!(w["type"], "server_tool_use");
+        assert_eq!(w["id"], "srv_1");
+        assert_eq!(w["input"]["query"], "rust");
+        let w2 = block_to_wire(&ContentBlock::ServerToolResult {
+            tool_use_id: "srv_1".into(),
+            result_type: "web_search_tool_result".into(),
+            content: json!([{ "title": "x" }]),
+        })
+        .unwrap();
+        assert_eq!(w2["type"], "web_search_tool_result"); // 원래 타입 보존
+        assert_eq!(w2["tool_use_id"], "srv_1");
+        assert!(w2["content"].is_array());
     }
 
     #[test]

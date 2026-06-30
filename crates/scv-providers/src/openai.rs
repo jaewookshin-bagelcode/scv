@@ -158,6 +158,8 @@ fn render_for_count(system: Option<&str>, messages: &[Message], tools: &[ToolSch
                     s.push_str(&input.to_string());
                 }
                 ContentBlock::ToolResult { content, .. } => s.push_str(content),
+                // 서버사이드 도구 블록(web_search 등)은 Anthropic 전용 — OpenAI 경로엔 오지 않는다.
+                ContentBlock::ServerToolUse { .. } | ContentBlock::ServerToolResult { .. } => {}
             }
             s.push('\n');
         }
@@ -272,8 +274,11 @@ fn push_user_message(content: &[ContentBlock], out: &mut Vec<Value>) {
                 }));
             }
             ContentBlock::Text { text: t } => append_line(&mut text, t),
-            // user 메시지에 thinking/tool_use 는 정상적으로 오지 않는다.
-            ContentBlock::Thinking { .. } | ContentBlock::ToolUse { .. } => {}
+            // user 메시지에 thinking/tool_use/서버툴 블록은 정상적으로 오지 않는다(Anthropic 전용).
+            ContentBlock::Thinking { .. }
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::ServerToolUse { .. }
+            | ContentBlock::ServerToolResult { .. } => {}
         }
     }
     if !text.is_empty() {
@@ -300,7 +305,10 @@ fn assistant_to_wire(content: &[ContentBlock]) -> Value {
                     },
                 }));
             }
-            ContentBlock::Thinking { .. } | ContentBlock::ToolResult { .. } => {}
+            ContentBlock::Thinking { .. }
+            | ContentBlock::ToolResult { .. }
+            | ContentBlock::ServerToolUse { .. }
+            | ContentBlock::ServerToolResult { .. } => {}
         }
     }
     let mut msg = json!({ "role": "assistant" });

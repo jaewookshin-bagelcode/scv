@@ -204,6 +204,86 @@ async fn pause_turn_resumes_then_finishes() {
 }
 
 #[tokio::test]
+async fn server_tool_blocks_preserved_across_pause_turn() {
+    // 서버사이드 web_search(5d): server_tool_use/web_search_tool_result 블록이 assistant 에
+    // 보존돼 pause_turn 재개 시 다시 보낼 수 있어야 한다. 재개 후 최종 답으로 종료.
+    let agent = make_agent(vec![
+        vec![
+            StreamEvent::MessageStart {
+                model: "fake".into(),
+            },
+            StreamEvent::ServerToolUse {
+                id: "srv_1".into(),
+                name: "web_search".into(),
+                input: serde_json::json!({ "q": "x" }),
+            },
+            StreamEvent::ServerToolResult {
+                tool_use_id: "srv_1".into(),
+                result_type: "web_search_tool_result".into(),
+                content: serde_json::json!([]),
+            },
+            StreamEvent::MessageStop {
+                stop_reason: StopReason::PauseTurn,
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            StreamEvent::TextDelta("answer".into()),
+            StreamEvent::MessageStop {
+                stop_reason: StopReason::EndTurn,
+                usage: Usage::default(),
+            },
+        ],
+    ]);
+
+    let mut session = scv_core::session::Session::new();
+    agent
+        .run_turn(&mut session, "find X".into(), &NullObserver)
+        .await
+        .expect("turn ok");
+
+    // [user, assistant(서버툴 블록 보존), assistant("answer")].
+    assert_eq!(session.messages.len(), 3);
+    let first = &session.messages[1];
+    assert!(first
+        .content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::ServerToolUse { .. })));
+    assert!(first
+        .content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::ServerToolResult { .. })));
+}
+
+#[tokio::test]
+async fn pause_turn_cap_stops_after_limit() {
+    // 매 응답이 pause_turn → 무한 재개 대신 한도(3) 초과 시 Ok 로 종료. 4개 스크립트면
+    // 1·2·3 재개 통과 후 4번째 pause 에서 종료(iteration 캡 10 보다 먼저).
+    let pause_script = || {
+        vec![
+            StreamEvent::TextDelta("searching".into()),
+            StreamEvent::MessageStop {
+                stop_reason: StopReason::PauseTurn,
+                usage: Usage::default(),
+            },
+        ]
+    };
+    let agent = make_agent(vec![
+        pause_script(),
+        pause_script(),
+        pause_script(),
+        pause_script(),
+    ]);
+    let mut session = scv_core::session::Session::new();
+    agent
+        .run_turn(&mut session, "go".into(), &NullObserver)
+        .await
+        .expect("pause 캡 초과 시 Ok 종료");
+    // user + assistant×4 = 5.
+    assert_eq!(session.messages.len(), 5);
+}
+
+#[tokio::test]
 async fn tool_turn_executes_and_threads_result_then_finishes() {
     let agent = make_agent(vec![
         // 1번째 호출: 도구를 부른다.

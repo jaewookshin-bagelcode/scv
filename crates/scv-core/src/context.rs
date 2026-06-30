@@ -215,6 +215,12 @@ fn render_transcript(messages: &[Message]) -> String {
                     let trimmed: String = content.chars().take(200).collect();
                     s.push_str(&format!("[tool result] {trimmed}\n"));
                 }
+                ContentBlock::ServerToolUse { name, .. } => {
+                    s.push_str(&format!("{role} used server tool `{name}`\n"));
+                }
+                ContentBlock::ServerToolResult { .. } => {
+                    s.push_str("[server tool result]\n");
+                }
                 ContentBlock::Thinking { .. } => {} // 사고는 요약 입력에서 제외.
             }
         }

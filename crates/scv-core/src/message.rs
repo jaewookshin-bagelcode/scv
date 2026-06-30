@@ -48,6 +48,22 @@ pub enum ContentBlock {
         #[serde(default)]
         is_error: bool,
     },
+
+    /// 서버사이드 도구(web_search 등) 호출 — 모델이 **서버에서** 실행한다. 클라이언트는 실행하지
+    /// 않고, `pause_turn` 재개 시 이 블록을 **그대로 다시 보내야** 하므로 보존한다(ROADMAP 5d/5c).
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+
+    /// 서버사이드 도구 결과(`web_search_tool_result` 등). 결과 스키마가 도구마다 달라 `content` 는
+    /// raw JSON 으로, 원래 블록 타입은 `result_type` 으로 보존해 재전송 시 그대로 직렬화한다.
+    ServerToolResult {
+        tool_use_id: String,
+        result_type: String,
+        content: serde_json::Value,
+    },
 }
 
 impl ContentBlock {
@@ -133,6 +149,19 @@ pub enum StreamEvent {
     ToolUseStart { id: String, name: String },
     /// tool_use 입력 JSON 의 증분(부분 문자열).
     ToolUseInputDelta { id: String, partial_json: String },
+    /// 서버사이드 도구 호출 1건이 완성됨(web_search 등). 디코더가 input 까지 모아 한 번에 낸다 —
+    /// 클라이언트 실행 없이 보존만 한다(pause_turn 재개용, ROADMAP 5d).
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// 서버사이드 도구 결과 1건(`web_search_tool_result` 등). 결과는 블록 시작에 통째로 온다.
+    ServerToolResult {
+        tool_use_id: String,
+        result_type: String,
+        content: serde_json::Value,
+    },
     /// 콘텐츠 블록 하나 종료.
     ContentBlockStop,
     /// 응답 종료. 정규화된 stop_reason 과 누적 usage.
