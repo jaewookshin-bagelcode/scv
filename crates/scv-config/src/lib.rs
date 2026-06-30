@@ -122,6 +122,10 @@ pub struct ProviderConfig {
     /// `"bearer"` = `Authorization: Bearer`(aiproxy 등 게이트웨이 경유). 다른 kind 는 무시.
     #[serde(default)]
     pub auth_style: Option<String>,
+    /// 서버사이드 web_search 활성화(anthropic kind 전용, ROADMAP 5d). true 면 어댑터가 native
+    /// `web_search` 서버툴을 요청 tools 에 실어 모델이 서버에서 검색하게 한다. 다른 kind 는 무시.
+    #[serde(default)]
+    pub web_search: bool,
 }
 
 impl Config {
@@ -208,6 +212,7 @@ fn builtin_provider(id: &str) -> Option<ProviderConfig> {
             base_url: None,
             anthropic_version: None,
             auth_style: None,
+            web_search: false,
         }),
         "aiproxy" => Some(ProviderConfig {
             id: "aiproxy".into(),
@@ -217,6 +222,8 @@ fn builtin_provider(id: &str) -> Option<ProviderConfig> {
             base_url: Some("https://aiproxy-api.backoffice.bagelgames.com/anthropic".into()),
             anthropic_version: Some("2023-06-01".into()),
             auth_style: Some("bearer".into()),
+            // 기본 off — 토큰만으로 동작(검색은 명시 opt-in). config 에서 web_search=true 로 켠다.
+            web_search: false,
         }),
         _ => None,
     }
@@ -350,11 +357,19 @@ model = "claude-haiku-4-5"
 api_key_env = "AI_PROXY_PERSONAL_TOKEN"
 base_url = "https://custom.example.com/anthropic"
 auth_style = "bearer"
+web_search = true
 "#;
         let cfg: Config = toml::from_str(toml_str).expect("parse");
         let p = cfg.resolve_provider("aiproxy").expect("configured aiproxy");
         assert_eq!(p.model, "claude-haiku-4-5"); // config 값
         assert_eq!(p.api_key_env.as_deref(), Some("AI_PROXY_PERSONAL_TOKEN"));
+        assert!(p.web_search); // web_search 플래그 파싱(5d)
+                               // 생략 시 기본 false.
+        let off: Config = toml::from_str(
+            "default_provider=\"x\"\n[[providers]]\nid=\"x\"\nkind=\"anthropic\"\nmodel=\"m\"\n",
+        )
+        .unwrap();
+        assert!(!off.resolve_provider("x").unwrap().web_search);
     }
 
     #[test]

@@ -73,12 +73,21 @@ pub struct AnthropicProvider {
     api_key: String,
     base_url: String,
     auth: AuthStyle,
+    /// 서버사이드 web_search 활성화 여부(ROADMAP 5d). true 면 `to_wire` 가 native web_search
+    /// 서버툴을 요청 tools 에 추가한다.
+    web_search: bool,
     http: reqwest::Client,
     models: Vec<ModelInfo>,
 }
 
 impl AnthropicProvider {
-    pub fn new(model: String, api_key: String, base_url: Option<String>, auth: AuthStyle) -> Self {
+    pub fn new(
+        model: String,
+        api_key: String,
+        base_url: Option<String>,
+        auth: AuthStyle,
+        web_search: bool,
+    ) -> Self {
         Self {
             model,
             api_key,
@@ -88,6 +97,7 @@ impl AnthropicProvider {
                 .trim_end_matches('/')
                 .to_string(),
             auth,
+            web_search,
             http: reqwest::Client::new(),
             // aiproxy 경유로 제한한 모델군(Sonnet/Haiku). 직결로 다른 모델을 쓰려면 config 의
             // `model` 로 지정하면 되고, 이 목록은 능력 조회/검증용 메타데이터다.
@@ -130,7 +140,7 @@ impl Provider for AnthropicProvider {
     }
 
     async fn stream(&self, request: CompletionRequest) -> Result<EventStream> {
-        let wire = to_wire(&request, true);
+        let wire = to_wire(&request, true, self.web_search);
         let req = self
             .http
             .post(format!("{}/v1/messages", self.base_url))
@@ -199,7 +209,7 @@ impl Provider for AnthropicProvider {
 
 /// 코어 [`CompletionRequest`] 를 Anthropic Messages 요청 본문으로 변환한다 — **순수**.
 /// `stream` 이면 `stream:true` 를 넣는다(count_tokens 경로는 false).
-fn to_wire(req: &CompletionRequest, stream: bool) -> Value {
+fn to_wire(req: &CompletionRequest, stream: bool, web_search: bool) -> Value {
     let mut body = json!({
         "model": req.model,
         "max_tokens": req.max_tokens,
@@ -222,6 +232,17 @@ fn to_wire(req: &CompletionRequest, stream: bool) -> Value {
     }
     if !req.tools.is_empty() {
         body["tools"] = tools_to_wire(&req.tools);
+    }
+    // 서버사이드 web_search(ROADMAP 5d): native 서버툴을 tools 배열에 추가한다. 프록시가 그대로
+    // Anthropic 에 전달 → 모델이 **서버에서** 검색을 실행하고 결과·인용을 같은 응답에 실어 보낸다
+    // (로컬 도구처럼 tool_use→tool_result 왕복이 없다). 함수 툴과 와이어 형태가 달라(스키마 없이
+    // type/name) 별도로 끼운다. 긴 검색은 stop_reason=pause_turn 으로 끊겨 루프가 재개한다(5c).
+    if web_search {
+        let tool = json!({ "type": "web_search_20250305", "name": "web_search" });
+        match body.get_mut("tools").and_then(|t| t.as_array_mut()) {
+            Some(arr) => arr.push(tool),
+            None => body["tools"] = json!([tool]),
+        }
     }
     // 추론: 4.6+ 는 thinking:{type:"adaptive"} + output_config.effort(budget_tokens 미사용).
     if req.thinking != ThinkingMode::Disabled {
@@ -514,7 +535,11 @@ mod tests {
             name: "read".into(),
             input: json!({ "path": "a.rs" }),
         }]);
-        let wire = to_wire(&req(vec![Message::user("hi"), assistant], vec![]), true);
+        let wire = to_wire(
+            &req(vec![Message::user("hi"), assistant], vec![]),
+            true,
+            false,
+        );
         assert_eq!(wire["model"], "claude-opus-4-8");
         // system 은 cache_control 을 단 텍스트 블록 배열(프롬프트 캐싱, 5b).
         assert_eq!(wire["system"][0]["type"], "text");
@@ -536,9 +561,26 @@ mod tests {
     fn wire_disabled_thinking_omits_thinking() {
         let mut r = req(vec![Message::user("hi")], vec![]);
         r.thinking = ThinkingMode::Disabled;
-        let wire = to_wire(&r, false);
+        let wire = to_wire(&r, false, false);
         assert!(wire.get("thinking").is_none());
         assert!(wire.get("stream").is_none());
+    }
+
+    #[test]
+    fn web_search_appends_server_tool() {
+        // web_search=true → tools 배열에 native web_search 서버툴이 추가된다(5d).
+        // 함수 툴이 없어도(빈 tools) 배열을 만들어 끼운다.
+        let wire = to_wire(&req(vec![Message::user("hi")], vec![]), true, true);
+        let tools = wire["tools"].as_array().expect("tools array");
+        assert!(
+            tools
+                .iter()
+                .any(|t| t["type"] == "web_search_20250305" && t["name"] == "web_search"),
+            "web_search 서버툴이 tools 에 있어야 한다: {tools:?}"
+        );
+        // web_search=false 면 tools 가 없다(함수 툴도 없으므로).
+        let off = to_wire(&req(vec![Message::user("hi")], vec![]), true, false);
+        assert!(off.get("tools").is_none());
     }
 
     #[test]
@@ -679,6 +721,7 @@ mod tests {
             "k".into(),
             Some("https://aiproxy-api.example.com/anthropic/".into()),
             AuthStyle::Bearer,
+            false,
         );
         // 끝 슬래시 정규화 → `{base_url}/v1/messages` 가 이중 슬래시로 깨지지 않는다.
         assert!(p.base_url.ends_with("/anthropic"));

@@ -70,7 +70,7 @@
 - [ ] **5a. 프로바이더 좁히기** — 로컬 Ollama(무인증 개발/CI) + 클라우드는 aiproxy 경유 Anthropic(Sonnet/Haiku) 하나로 고정. anthropic 어댑터에 Bearer 인증 모드(`auth_style`), `base_url`에 프록시 경로. 이후 단계의 전제(와이어를 Anthropic 하나로 고정해 변수 통제).
 - [x] **5b. Prompt caching 실 활성화 + 비용 실측** — `to_wire` 가 `system` 블록에 `cache_control:{type:ephemeral}` 적재(렌더 순서 tools→system→messages 이므로 tools+system 안정 prefix 를 함께 캐시), 디코더가 `cache_creation/read_input_tokens` → `Usage`, observer 가 in/out/cache 토큰 표시. **실측(aiproxy Sonnet, 동일 prefix 2회)**: 1회차 cache_write 4707·read 0 → 2회차 read 4707·write 0(~0.1x). (**서버사이드 기능** — scv 는 마커·측정만.)
 - [x] **5c. 서버사이드 도구용 루프 일반화** — `StopReason::PauseTurn` 추가(+anthropic `map_stop_reason`). `run_turn` 이 stop_reason 을 ToolUse(로컬 실행)/PauseTurn(로컬·user 추가 없이 히스토리 재전송 재개, iteration 상한이 무한 pause 방지)/그 외(종료) 3갈래로 분기. 서버 tool_use 블록 보존(ContentBlock 확장)은 5d 에서 와이어와 함께. 5d·5e 의 전제.
-- [ ] **5d. web_search 서버사이드** — `tools` 에 native `web_search_*` 툴 passthrough(서버 실행·인용). 로컬 도구와의 차이 = 라운드트립 없음·제어/투명성 낮음.
+- [x] **5d. web_search 서버사이드** — `ProviderConfig.web_search`(anthropic 전용) → `to_wire` 가 native `web_search_20250305` 서버툴을 tools 에 주입. 모델이 **서버에서** 검색 실행, 결과·인용을 같은 응답에 실어 보냄(로컬 도구의 tool_use→tool_result 왕복 없음). **라이브 검증**(aiproxy Sonnet, `--no-tools`로 격리): 실시간 BTC 시세를 다중 출처로 회신. *follow*: citations 구조적 표시·다중검색 `pause_turn` 시 서버블록 보존(ContentBlock 확장)은 미구현.
 - [ ] **5e. web_fetch 서버 vs 로컬 — 비교·측정 후 판단** — 서버 위임 vs 로컬 실행을 여러 축(권한 게이트·사내망 접근·감사/투명성·라운드트립·비용)으로 **실제 비교**하고, 어느 쪽을 택하는지 측정·근거와 함께 도출·문서화. *(결론은 미리 박지 않는다 — 측정 후 결정.)*
 - [ ] **5f. compaction 서버 vs 로컬 — 비교·측정 후 판단** — 로컬 전략(`Clear`/`Summarizing`) vs Anthropic 서버사이드 context editing/memory 를 토큰·손실·캐시 prefix 상호작용·프로바이더 종속성 축으로 **비교 측정**하고 근거와 함께 판단. 서버 context editing ↔ 5b 캐시 prefix 상호작용 주의. *(결론은 측정 후 도출.)*
 

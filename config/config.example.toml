@@ -73,6 +73,8 @@ api_key_env = "CODEB_TOKEN"
 base_url = "https://aiproxy-api.backoffice.bagelgames.com/anthropic"
 anthropic_version = "2023-06-01"
 auth_style = "bearer"
+# web_search = true                # 서버사이드 web_search(anthropic 전용). 모델이 서버에서
+#                                  # 검색을 실행하고 결과·인용을 응답에 실어 보낸다. 기본 off.
 
 # 기본 프로바이더 — 로컬 모델(Ollama, 무료·오프라인). kind="ollama" 면 OpenAI-호환 어댑터를
 # 재사용하되 로컬 기본 base_url(http://localhost:11434/v1)과 호환 모드(max_tokens·no

@@ -110,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
         api_key,
         pconf.base_url.clone(),
         pconf.auth_style.as_deref(),
+        pconf.web_search,
     )?;
 
     // 4. 도구/스킬/권한 구성. --no-tools 면 빈 레지스트리(도구 스키마 미전송 → tool calling
@@ -238,6 +239,7 @@ async fn main() -> anyhow::Result<()> {
                         api_key,
                         pconf.base_url.clone(),
                         pconf.auth_style.as_deref(),
+                        pconf.web_search,
                     )?;
                     Ok((provider, pconf.model.clone()))
                 };
