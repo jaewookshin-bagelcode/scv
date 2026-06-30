@@ -159,9 +159,19 @@ impl Config {
         home.join(".scv/config.toml")
     }
 
-    /// 프로젝트 설정 경로(cwd 기준 `./.scv/config.toml`). 작업 중인 repo 별 오버라이드.
+    /// 프로젝트 설정 경로(cwd 의 `./.scv/config.toml`). 작업 중인 repo 별 오버라이드.
+    ///
+    /// **cwd 절대경로로 만든다** — figment 의 `Toml::file` 은 **상대경로**를 받으면 cwd 에서
+    /// 상위 디렉터리로 거슬러 올라가며 파일을 찾는다. 상대경로(`"./.scv/config.toml"`)를 그대로
+    /// 주면 cwd 가 `$HOME` 아래일 때 위로 올라가다 user 설정인 `~/.scv/config.toml` 을 "프로젝트
+    /// config" 로 오인해 로드하고, 그게 user 레이어(`SCV_CONFIG` 포함)를 덮어쓴다. 절대경로면
+    /// 상위탐색이 일어나지 않아 cwd 의 `.scv/config.toml` 만 본다. cwd 확인 실패 시에만 상대경로로
+    /// 폴백한다(드문 경우). cwd 에 파일이 없으면 figment 이 그냥 건너뛴다.
     fn project_path() -> PathBuf {
-        PathBuf::from("./.scv/config.toml")
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(".scv/config.toml"),
+            Err(_) => PathBuf::from("./.scv/config.toml"),
+        }
     }
 
     /// 기본 프로바이더 설정을 찾는다(설정 파일에 있는 것만; 내장 폴백은 [`Self::resolve_provider`]).
@@ -386,6 +396,15 @@ model = "qwen3.5:9b"
         // ollama 는 config 에 있으니 한 번만, aiproxy 는 내장이라 추가됨.
         assert_eq!(ids.iter().filter(|i| *i == "ollama").count(), 1);
         assert!(ids.contains(&"aiproxy".to_string()));
+    }
+
+    #[test]
+    fn project_path_is_absolute_to_avoid_ancestor_search() {
+        // figment 의 Toml::file 은 상대경로면 상위 디렉터리로 거슬러 탐색해 ~/.scv/config.toml 을
+        // 프로젝트 config 로 오인할 수 있다(SCV_CONFIG 무력화). project_path 는 cwd 절대경로여야 한다.
+        let p = Config::project_path();
+        assert!(p.is_absolute(), "project_path 는 절대경로여야 한다: {p:?}");
+        assert_eq!(p, std::env::current_dir().unwrap().join(".scv/config.toml"));
     }
 
     #[test]
