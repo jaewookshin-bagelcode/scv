@@ -160,9 +160,28 @@ impl Agent {
                 return Err(Error::Cancelled);
             }
 
-            // 4. 더 이상 도구 호출이 없으면 턴 종료.
-            if stop_reason != StopReason::ToolUse {
-                return Ok(());
+            // 4. stop_reason 분기(서버사이드 도구 일반화, ROADMAP 5c):
+            //  - ToolUse → 아래에서 **로컬** 도구 실행(클라이언트 tool_use 블록).
+            //  - PauseTurn → 서버사이드 도구(web_search 등)가 실행 중 일시정지. 로컬 실행도
+            //    user 메시지 추가도 하지 않고, 방금 push 한 assistant(서버 tool_use 블록 포함)까지의
+            //    히스토리를 **그대로 다시 보내** 재개한다(Anthropic 권장). max_tool_iterations 가
+            //    무한 pause 를 막는다.
+            //  - 그 외(EndTurn·MaxTokens·Refusal·StopSequence) → 턴 종료.
+            match stop_reason {
+                StopReason::ToolUse => {} // 아래 로컬 실행 경로로.
+                StopReason::PauseTurn => {
+                    // 협조적 취소: 재개 직전 체크포인트.
+                    if cancel.is_cancelled() {
+                        observer.on_event(&AgentEvent::Interrupted).await;
+                        return Err(Error::Cancelled);
+                    }
+                    tracing::debug!(
+                        iteration,
+                        "pause_turn — 히스토리 재전송으로 서버사이드 턴 재개"
+                    );
+                    continue;
+                }
+                _ => return Ok(()),
             }
 
             // 협조적 취소 ③: 도구 실행 직전 체크포인트.
@@ -1097,6 +1116,44 @@ mod exec_tests {
         assert!(matches!(
             &session.messages[2].content[0],
             ContentBlock::ToolResult { content, .. } if content == "echo"
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_turn_resumes_on_pause_turn() {
+        // 서버사이드 도구 일반화(5c): pause_turn 이면 로컬 도구 실행·user 메시지 추가 없이
+        // 히스토리를 재전송해 재개하고, 다음 응답이 EndTurn 이면 턴이 정상 종료된다.
+        let provider = Arc::new(SeqProvider {
+            scripts: std::sync::Mutex::new(std::collections::VecDeque::from(vec![
+                // 이터레이션 0: 서버사이드 도구 실행 중 일시정지.
+                vec![
+                    StreamEvent::MessageStart { model: "m".into() },
+                    StreamEvent::TextDelta("searching".into()),
+                    stop(StopReason::PauseTurn),
+                ],
+                // 이터레이션 1: 재개되어 최종 답으로 마무리.
+                vec![
+                    StreamEvent::TextDelta("done".into()),
+                    stop(StopReason::EndTurn),
+                ],
+            ])),
+        });
+        let agent = agent_with_provider(provider, ToolRegistry::new());
+        let mut session = Session::new();
+        agent
+            .run_turn(&mut session, "go".into(), &NullObserver)
+            .await
+            .expect("ok");
+        // user("go") + assistant("searching") + assistant("done"). pause_turn 은 user(tool_result)
+        // 메시지를 추가하지 않고 히스토리를 그대로 재전송해 재개한다.
+        assert_eq!(session.messages.len(), 3);
+        assert!(matches!(
+            &session.messages[1].content[0],
+            ContentBlock::Text { text } if text == "searching"
+        ));
+        assert!(matches!(
+            &session.messages[2].content[0],
+            ContentBlock::Text { text } if text == "done"
         ));
     }
 

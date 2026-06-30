@@ -484,6 +484,7 @@ fn map_stop_reason(s: &str) -> StopReason {
         "end_turn" => StopReason::EndTurn,
         "max_tokens" => StopReason::MaxTokens,
         "tool_use" => StopReason::ToolUse,
+        "pause_turn" => StopReason::PauseTurn,
         "stop_sequence" => StopReason::StopSequence,
         "refusal" => StopReason::Refusal,
         _ => StopReason::EndTurn,
@@ -655,6 +656,7 @@ mod tests {
         assert_eq!(map_stop_reason("end_turn"), StopReason::EndTurn);
         assert_eq!(map_stop_reason("max_tokens"), StopReason::MaxTokens);
         assert_eq!(map_stop_reason("tool_use"), StopReason::ToolUse);
+        assert_eq!(map_stop_reason("pause_turn"), StopReason::PauseTurn);
         assert_eq!(map_stop_reason("stop_sequence"), StopReason::StopSequence);
         assert_eq!(map_stop_reason("refusal"), StopReason::Refusal);
         assert_eq!(map_stop_reason("???"), StopReason::EndTurn);

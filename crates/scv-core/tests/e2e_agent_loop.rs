@@ -160,6 +160,50 @@ async fn text_turn_streams_and_finishes() {
 }
 
 #[tokio::test]
+async fn pause_turn_resumes_then_finishes() {
+    // 서버사이드 도구 일반화(5c): stop=pause_turn 이면 로컬 도구 실행·user 메시지 추가 없이
+    // 히스토리를 재전송해 재개하고, 이어진 응답이 end_turn 이면 턴이 정상 종료된다.
+    let agent = make_agent(vec![
+        // 1차: 서버사이드 도구 실행 중 일시정지.
+        vec![
+            StreamEvent::MessageStart {
+                model: "fake".into(),
+            },
+            StreamEvent::TextDelta("searching".into()),
+            StreamEvent::MessageStop {
+                stop_reason: StopReason::PauseTurn,
+                usage: Usage::default(),
+            },
+        ],
+        // 2차: 재개되어 최종 답으로 마무리.
+        vec![
+            StreamEvent::TextDelta("answer".into()),
+            StreamEvent::MessageStop {
+                stop_reason: StopReason::EndTurn,
+                usage: Usage::default(),
+            },
+        ],
+    ]);
+
+    let mut session = scv_core::session::Session::new();
+    agent
+        .run_turn(&mut session, "find X".into(), &NullObserver)
+        .await
+        .expect("turn ok");
+
+    // [user, assistant("searching"), assistant("answer")] — pause_turn 은 tool_result user
+    // 메시지를 추가하지 않고 히스토리를 그대로 재전송해 재개한다(로컬 도구 실행 없음).
+    assert_eq!(session.messages.len(), 3);
+    assert!(matches!(session.messages[0].role, Role::User));
+    assert!(
+        matches!(&session.messages[1].content[0], ContentBlock::Text { text } if text == "searching")
+    );
+    assert!(
+        matches!(&session.messages[2].content[0], ContentBlock::Text { text } if text == "answer")
+    );
+}
+
+#[tokio::test]
 async fn tool_turn_executes_and_threads_result_then_finishes() {
     let agent = make_agent(vec![
         // 1번째 호출: 도구를 부른다.

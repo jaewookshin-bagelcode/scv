@@ -98,6 +98,9 @@ pub enum StopReason {
     MaxTokens,
     /// 도구 호출을 요청함 → 실행 후 결과를 돌려줘야 함.
     ToolUse,
+    /// 서버사이드 도구(web_search 등) 실행 도중 모델이 턴을 일시정지함. 로컬 실행 없이
+    /// 누적 히스토리(서버 tool_use 블록 포함)를 **그대로 다시 보내** 재개한다(ROADMAP 5c).
+    PauseTurn,
     /// 안전상의 이유로 거부.
     Refusal,
     /// 사용자 지정 stop sequence 도달.
