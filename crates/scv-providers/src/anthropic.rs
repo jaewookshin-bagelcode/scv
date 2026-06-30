@@ -535,6 +535,16 @@ impl AnthropicDecoder {
                             }
                         }
                     }
+                    // 출처 인용(web_search 등): delta.citation 에서 url/title 추출(ROADMAP 5d).
+                    "citations_delta" => {
+                        let c = &delta["citation"];
+                        if let Some(url) = c["url"].as_str() {
+                            out.push(StreamEvent::Citation {
+                                url: url.to_string(),
+                                title: c["title"].as_str().map(str::to_string),
+                            });
+                        }
+                    }
                     // signature_delta 등은 코어 이벤트로 표현하지 않으므로 무시.
                     _ => {}
                 }
@@ -787,6 +797,25 @@ mod tests {
                 StreamEvent::ServerToolResult { tool_use_id, result_type, .. }
                 if tool_use_id == "srv_1" && result_type == "web_search_tool_result")),
             "ServerToolResult 가 보존돼야: {out:?}"
+        );
+    }
+
+    #[test]
+    fn decodes_citation_delta() {
+        // web_search 답변의 citations_delta → Citation{url,title} 이벤트(출처 표시용, 5d).
+        let events = vec![json!({
+            "type": "content_block_delta", "index": 2,
+            "delta": { "type": "citations_delta", "citation": {
+                "type": "web_search_result_location",
+                "url": "https://example.com", "title": "Example", "cited_text": "x"
+            } }
+        })];
+        let out = decode_all(&events);
+        assert!(
+            out.iter().any(|e| matches!(e,
+                StreamEvent::Citation { url, title }
+                if url == "https://example.com" && title.as_deref() == Some("Example"))),
+            "Citation 이벤트가 나와야: {out:?}"
         );
     }
 

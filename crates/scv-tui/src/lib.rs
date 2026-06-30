@@ -66,6 +66,14 @@ impl Observer for StreamObserver {
                 }
                 let _ = std::io::stdout().flush();
             }
+            // 출처 인용(서버 web_search 등) — 답변 텍스트가 어느 URL 에서 왔는지 표시한다(5d).
+            AgentEvent::Stream(StreamEvent::Citation { url, title }) => {
+                match title {
+                    Some(t) => print!("\n  └ 출처: {t} — {url}\n"),
+                    None => print!("\n  └ 출처: {url}\n"),
+                }
+                let _ = std::io::stdout().flush();
+            }
             AgentEvent::Stream(StreamEvent::MessageStop { stop_reason, usage }) => {
                 // in/out + 캐시 토큰(쓰기·읽기)까지 노출 → 프롬프트 캐싱 비용 실측(ROADMAP 5b).
                 // 캐시 미사용/미지원 프로바이더는 cache_* 가 0 이라 표시되지 않는다.

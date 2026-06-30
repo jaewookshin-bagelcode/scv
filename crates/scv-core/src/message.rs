@@ -162,6 +162,9 @@ pub enum StreamEvent {
         result_type: String,
         content: serde_json::Value,
     },
+    /// 출처 인용 1건(web_search 등 서버 도구 답변의 `citations_delta`). 답변 텍스트가 어느
+    /// 출처(URL)에서 왔는지의 구조적 메타데이터 — 관찰자가 사용자에게 출처로 표시한다(ROADMAP 5d).
+    Citation { url: String, title: Option<String> },
     /// 콘텐츠 블록 하나 종료.
     ContentBlockStop,
     /// 응답 종료. 정규화된 stop_reason 과 누적 usage.
