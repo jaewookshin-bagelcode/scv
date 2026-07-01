@@ -222,10 +222,14 @@ impl App {
         mut session: Session,
         store: &dyn SessionStore,
         providers: &[String],
+        provider_id: &str,
         make_provider: &MakeProvider<'_>,
         skills: &SkillRegistry,
     ) -> scv_core::Result<()> {
-        self.model_label = format!("{}·{}", agent.provider.id(), agent.model);
+        // 라벨은 **설정 프로바이더 id**(예: aiproxy)를 쓴다. `agent.provider.id()` 는 어댑터
+        // 와이어 종류(anthropic)라 aiproxy 처럼 한 어댑터가 여러 설정 id 를 서빙하면 어긋난다
+        // (`/provider` 전환 라벨과 동일한 기준). 모델은 실행 중 `/model` 로 바뀔 수 있다.
+        self.model_label = format!("{provider_id}·{}", agent.model);
         // 실시간 모델 카탈로그를 캐시(aiproxy 는 GET /api/v1/models/anthropic 조회). 실패하면
         // 빈 목록 → `/model` 검증은 건너뛰고 `/models` 는 "없음" 을 표시(시작을 막지 않음).
         self.models = agent.provider.list_models().await.unwrap_or_default();

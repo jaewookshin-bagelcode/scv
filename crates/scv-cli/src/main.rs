@@ -252,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
                 session,
                 &store,
                 &provider_ids,
+                provider_id,
                 &make_provider,
                 &skills,
             )
