@@ -245,13 +245,13 @@ OpenAI — 구조가 달라 어댑터가 재배치:
   사후 감사 가능. (구현이 `scv-cli` 에 있는 이유: 코어는 "어디에 저장할지"를 몰라야 함.)
 - 컨텍스트가 모델 윈도에 근접하면 `ContextManager` 가 히스토리를 줄인다(compaction).
   대화가 길어지면 **매 요청마다 메시지 전체를 다시 모델에 보내야** 하므로, 어느
-  순간 윈도를 넘기지 않게 과거를 줄여야 한다. 전략은 trait 으로 교체 가능하며 셋 다 구현돼
-  있다(`scv-cli` 기본은 `SummarizingContextManager`). `prepare(messages, last_input_tokens)`
+  순간 윈도를 넘기지 않게 과거를 줄여야 한다. 전략은 trait 으로 교체 가능하며 넷 다 구현돼
+  있다(`scv-cli` 기본은 아래 `LayeredContextManager`). `prepare(messages, last_input_tokens)`
   가 직전 응답의 입력 토큰을 트리거 신호로 받는다:
   - **트리거 신호**: 직전 응답의 `Usage.input_tokens` 를 **우선** 본다(추가 호출 0).
     임계치는 `[session].compact_threshold_tokens`(기본 150K). 첫 전송 전 거대 입력 등
     사전 점검이 필요할 때만 `Provider::count_tokens`(어댑터별)를 보조로 쓴다.
-  - `SummarizingContextManager` — **주류·기본 방식**. 오래된 앞부분을 LLM 으로 요약해
+  - `SummarizingContextManager` — **요약 방식**(아래 `LayeredContextManager` 의 2차 단). 오래된 앞부분을 LLM 으로 요약해
     압축본으로 교체하고, 최근 턴은 verbatim 유지해 정밀도를 지킨다(요약 호출도
     `Provider` 를 통해 한다). Claude Code 의 auto-compact, Codex 의 컨텍스트 요약이 이
     방식이다. **트레이드오프**: 요약하느라 LLM 을 한 번 더 부르고(비용·지연), 요약이
@@ -266,6 +266,12 @@ OpenAI — 구조가 달라 어댑터가 재배치:
     한다(요약본의 흐릿한 기억이 아니라 정밀 재조회). LLM 호출 0·무손실이 대신, 모델이
     도구를 다시 부르는 왕복이 가끔 생긴다. **도구 결과가 재생성 가능한 코딩 에이전트에
     특히 잘 맞는다** — 일반 챗봇엔 없는 성질이다.
+  - `LayeredContextManager` — **scv 기본**. 위 둘을 **2단으로 합성**한다: 임계 초과 시 ①
+    `ClearToolResultsManager` 로 재생성 가능한 도구 결과를 무손실로 비워 대량 회수하고, 그러고도
+    남은 분량(추정)이 임계를 넘으면 ② `SummarizingContextManager` 로 요약한다. 컨텍스트 대부분이
+    도구 결과라 1차 clear 로 대부분 회수되고 손실적 요약은 최소한으로만 쓰인다. (서버도 `edits`
+    배열에 `clear_tool_uses`+`compact_20260112` 를 함께 얹어 같은 계층을 만들 수 있다 — aiproxy 로
+    조합 수용 200 확인.)
 
 **서버 vs 로컬 컨텍스트 관리 — 측정 근거로 결정(ROADMAP 5f).** Anthropic 도 서버사이드
 context editing(`clear_tool_uses_20250919`)을 제공한다. 측정(aiproxy Sonnet):

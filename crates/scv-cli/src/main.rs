@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Parser;
 use scv_core::agent::Agent;
-use scv_core::context::SummarizingContextManager;
+use scv_core::context::LayeredContextManager;
 use scv_core::provider::Effort;
 use scv_core::session::{Session, SessionId, SessionStore};
 use scv_core::system_prompt::SystemPromptBuilder;
@@ -162,9 +162,10 @@ async fn main() -> anyhow::Result<()> {
     let workdir = _workspace.path().to_path_buf();
 
     // 7. 에이전트 조립. 취소 토큰은 한 턴 동안 공유한다(원샷 Ctrl-C 도 같은 토큰을 끈다).
-    //    컨텍스트 관리: 임계(compact_threshold_tokens) 초과 시 오래된 앞부분을 같은 모델로
-    //    요약(compaction)한다. 최근 KEEP_RECENT 개 메시지는 verbatim 유지(ROADMAP 3b).
-    let context = Arc::new(SummarizingContextManager::new(
+    //    컨텍스트 관리: 임계(compact_threshold_tokens) 초과 시 **2단 compaction** — 재생성
+    //    가능한 도구 결과를 무손실로 비우고(clear), 그래도 크면 남은 대화를 요약한다(ARCHITECTURE
+    //    §4.2). 최근 KEEP_RECENT 개 메시지는 verbatim 유지(ROADMAP 3b).
+    let context = Arc::new(LayeredContextManager::new(
         provider.clone(),
         model.clone(),
         config.session.compact_threshold_tokens,

@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use scv_core::agent::{Agent, NullObserver};
 use scv_core::context::{
-    ClearToolResultsManager, ContextManager, NoopContextManager, SummarizingContextManager,
+    ClearToolResultsManager, ContextManager, LayeredContextManager, NoopContextManager,
+    SummarizingContextManager,
 };
 use scv_core::message::{ContentBlock, Message, Role, StopReason, StreamEvent, Usage};
 use scv_core::provider::{CompletionRequest, EventStream, ModelInfo, Provider, ToolSchema};
@@ -666,6 +667,100 @@ async fn summarizing_context_compacts_prefix_across_iterations() {
     assert_eq!(session.messages.len(), 4);
     assert!(matches!(&session.messages[3].content[0],
         ContentBlock::Text { text } if text == "final answer"));
+}
+
+#[tokio::test]
+async fn summarizer_renders_all_block_kinds_and_truncates() {
+    // render_transcript 의 모든 분기(사고·도구 인자·서버툴·초대형 결과 잘림)를 e2e 바이너리에서
+    // 태운다 — prepare 를 직접 호출해 folded 앞부분에 모든 블록 종류를 넣는다.
+    let provider = Arc::new(FakeProvider::new(vec![text_script("S", 0)]));
+    let mgr = SummarizingContextManager::new(provider, "m".into(), 100, 1);
+    let old = Message::assistant(vec![
+        ContentBlock::Thinking {
+            text: "reasoning".into(),
+            signature: None,
+        },
+        ContentBlock::ToolUse {
+            id: "c1".into(),
+            name: "read".into(),
+            input: serde_json::json!({ "path": "a.rs" }),
+        },
+        ContentBlock::ServerToolUse {
+            id: "s1".into(),
+            name: "web_search".into(),
+            input: serde_json::json!({ "query": "q" }),
+        },
+    ]);
+    let results = Message {
+        role: Role::User,
+        content: vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "Z".repeat(5000), // > 4000 캡 → 잘림 경로.
+                is_error: false,
+            },
+            ContentBlock::ServerToolResult {
+                tool_use_id: "s1".into(),
+                result_type: "web_search_tool_result".into(),
+                content: serde_json::json!([]),
+            },
+        ],
+    };
+    // keep_recent=1 → 앞 2개(old·results)가 folded → render_transcript 가 모든 분기를 탄다.
+    let out = mgr
+        .prepare(vec![old, results, Message::user("recent")], 500)
+        .await
+        .expect("prepare ok");
+    assert_eq!(out.len(), 2, "summary + 1 recent");
+    assert!(matches!(&out[0].content[0],
+        ContentBlock::Text { text } if text.contains("summarized")));
+}
+
+#[tokio::test]
+async fn layered_context_manager_clears_then_summarizes() {
+    // LayeredContextManager 의 두 경로를 e2e 바이너리에서 태운다: ① clear 만으로 충분 ② 요약까지.
+    let provider = Arc::new(FakeProvider::new(vec![text_script("SUM", 0)]));
+    let mgr = LayeredContextManager::new(provider, "m".into(), 100, 1);
+
+    // ① 앞부분이 큰 도구 결과 → clear 로 임계 아래 → 요약 없음(도구 결과 자리표시자 유지).
+    let cleared = mgr
+        .prepare(
+            vec![
+                Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "t".into(),
+                        content: "Z".repeat(4000),
+                        is_error: false,
+                    }],
+                },
+                Message::user("recent"),
+            ],
+            500,
+        )
+        .await
+        .expect("prepare ok");
+    assert_eq!(cleared.len(), 2);
+    assert!(matches!(&cleared[0].content[0],
+        ContentBlock::ToolResult { content, .. } if content.starts_with("[cleared")));
+
+    // ② 앞부분이 큰 텍스트(재생성 불가) → clear 로 안 줄어 요약 발동.
+    let summarized = mgr
+        .prepare(
+            vec![Message::user("Z".repeat(4000)), Message::user("recent")],
+            500,
+        )
+        .await
+        .expect("prepare ok");
+    assert!(matches!(&summarized[0].content[0],
+        ContentBlock::Text { text } if text.contains("summarized")));
+
+    // 임계 이하면 무동작.
+    let untouched = mgr
+        .prepare(vec![Message::user("a"), Message::user("b")], 10)
+        .await
+        .expect("prepare ok");
+    assert_eq!(untouched.len(), 2);
 }
 
 #[tokio::test]
