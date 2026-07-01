@@ -31,6 +31,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use eventsource_stream::{Event as SseEvent, Eventsource};
@@ -99,8 +100,10 @@ impl AnthropicProvider {
             auth,
             web_search,
             http: reqwest::Client::new(),
-            // aiproxy 경유로 제한한 모델군(Sonnet/Haiku). 직결로 다른 모델을 쓰려면 config 의
-            // `model` 로 지정하면 되고, 이 목록은 능력 조회/검증용 메타데이터다.
+            // 정적 폴백 목록(Sonnet/Haiku) — 오프라인·직결(x-api-key)·카탈로그 조회 실패용.
+            // 평상시 실시간 목록은 `list_models` 가 aiproxy `GET /api/v1/models/anthropic` 에서
+            // 가져온다(`/models` 표시·`/model` 검증의 출처). 직결로 다른 모델을 쓰려면 config 의
+            // `model` 로 지정한다.
             // 주의: effort 파라미터는 Haiku 4.5 에서 400 → to_wire 가 effort 를 보내는 현재 구성에선
             // Haiku 사용 시 thinking/effort 처리에 후속 보정이 필요(ROADMAP 5b).
             models: vec![
@@ -127,6 +130,44 @@ impl AnthropicProvider {
             AuthStyle::Bearer => req.bearer_auth(&self.api_key),
         }
     }
+
+    /// aiproxy 카탈로그(`GET {url}`)를 조회해 [`ModelInfo`] 목록으로 파싱한다. 네트워크·상태·
+    /// 파싱 실패나 빈 목록은 모두 `None`(호출자가 정적 [`Self::models`] 로 폴백). 시작을 막지
+    /// 않도록 5초 타임아웃.
+    async fn fetch_catalog(&self, url: &str) -> Option<Vec<ModelInfo>> {
+        let resp = self
+            .apply_auth(self.http.get(url))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let v: Value = resp.json().await.ok()?;
+        let models = parse_catalog(&v);
+        (!models.is_empty()).then_some(models)
+    }
+}
+
+/// aiproxy `GET /api/v1/models[/{provider}]` 응답(`{ models: [...] }`)을 [`ModelInfo`] 목록으로
+/// 변환한다 — **순수**(테스트 가능). `max_output_tokens`·`supports_thinking` 은 카탈로그가 주지
+/// 않으므로 관례 기본값을 채운다(표시/검증용 메타데이터라 정확도 요구가 낮다).
+fn parse_catalog(v: &Value) -> Vec<ModelInfo> {
+    let Some(arr) = v.get("models").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|m| {
+            let id = m.get("modelId")?.as_str()?.to_string();
+            Some(ModelInfo {
+                context_window: m.get("contextWindow").and_then(Value::as_u64).unwrap_or(0),
+                max_output_tokens: 64_000,
+                supports_thinking: true,
+                id,
+            })
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -137,6 +178,22 @@ impl Provider for AnthropicProvider {
 
     fn models(&self) -> &[ModelInfo] {
         &self.models
+    }
+
+    /// aiproxy(게이트웨이, Bearer)만 실시간 카탈로그를 노출한다:
+    /// `GET {root}/api/v1/models/anthropic`. `base_url` 은 `{root}/anthropic` 이므로 끝
+    /// 세그먼트를 떼어 root 를 얻는다. 직결 Anthropic(`x-api-key`)·비표준 base_url·조회 실패면
+    /// 정적 [`Self::models`] 로 폴백한다(오프라인에서도 동작).
+    async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        let root = match self.base_url.strip_suffix("/anthropic") {
+            Some(r) if self.auth == AuthStyle::Bearer => r,
+            _ => return Ok(self.models().to_vec()),
+        };
+        let url = format!("{root}/api/v1/models/anthropic");
+        Ok(self
+            .fetch_catalog(&url)
+            .await
+            .unwrap_or_else(|| self.models().to_vec()))
     }
 
     async fn stream(&self, request: CompletionRequest) -> Result<EventStream> {
@@ -893,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn new_lists_sonnet_and_haiku_and_trims_base_url() {
+    fn new_lists_fallback_models_and_trims_base_url() {
         let p = AnthropicProvider::new(
             "claude-sonnet-4-6".into(),
             "k".into(),
@@ -903,7 +960,30 @@ mod tests {
         );
         // 끝 슬래시 정규화 → `{base_url}/v1/messages` 가 이중 슬래시로 깨지지 않는다.
         assert!(p.base_url.ends_with("/anthropic"));
+        // 정적 목록은 오프라인 폴백용(실시간 목록은 list_models 가 aiproxy 카탈로그에서 가져온다).
         let ids: Vec<&str> = p.models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["claude-sonnet-4-6", "claude-haiku-4-5"]);
+    }
+
+    #[test]
+    fn parse_catalog_maps_aiproxy_fields() {
+        // aiproxy `GET /api/v1/models/anthropic` 응답 형태(실측 스키마 부분집합).
+        let v = json!({
+            "models": [
+                {"modelId": "claude-sonnet-4-6", "contextWindow": 1_000_000, "isDefault": true,
+                 "capabilities": ["vision"]},
+                {"modelId": "claude-opus-4-8", "contextWindow": 1_000_000, "capabilities": ["vision"]},
+                {"name": "no id — 무시됨"},
+            ]
+        });
+        let models = parse_catalog(&v);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["claude-sonnet-4-6", "claude-opus-4-8"]);
+        assert_eq!(models[0].context_window, 1_000_000);
+        assert_eq!(models[0].max_output_tokens, 64_000); // 카탈로그 미제공 → 관례 기본값
+
+        // models 키가 없거나 배열이 아니면 빈 목록(호출자가 정적 폴백).
+        assert!(parse_catalog(&json!({})).is_empty());
+        assert!(parse_catalog(&json!({"models": "nope"})).is_empty());
     }
 }

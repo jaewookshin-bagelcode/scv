@@ -159,6 +159,13 @@ flowchart BT
 > (Anthropic: `/v1/messages/count_tokens`, OpenAI: 로컬 토크나이저 tiktoken). 단
 > compaction 트리거의 **주 신호는 응답에 실려 오는 usage(`input_tokens`)** 이고,
 > `count_tokens` 는 사전 점검 보조용이다(§4.2).
+>
+> **모델 목록도 어댑터 책임이다** — `Provider::list_models` 가 실시간 카탈로그를 돌려준다.
+> 기본 구현은 정적 `models()` 를 복제하고, Anthropic 어댑터는 aiproxy 게이트웨이(Bearer)일 때
+> `GET {root}/api/v1/models/anthropic`(base_url 의 `/anthropic` 을 떼어 root 도출)로 실제
+> 제공 모델을 가져온다. 조회 실패·직결(x-api-key)·오프라인이면 정적 폴백. TUI 는 시작 시와
+> `/provider` 전환 후 이 결과를 캐시해 `/models`(목록 표시)·`/model <id>`(없는 모델 거부) 에
+> 쓴다 — 카탈로그가 비면 `/model` 검증은 건너뛴다.
 
 새 프로바이더 추가 = `Provider` 한 개 구현 + `scv_providers::build` 에 `kind` 분기
 한 줄. 코어·도구·TUI 는 손대지 않는다.

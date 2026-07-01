@@ -76,8 +76,15 @@ pub trait Provider: Send + Sync {
     /// 설정에서 참조하는 프로바이더 id (예: "anthropic").
     fn id(&self) -> &str;
 
-    /// 이 프로바이더가 지원하는 모델 목록.
+    /// 이 프로바이더가 지원하는 모델 목록(정적 폴백). 오프라인·직결에서도 동작한다.
     fn models(&self) -> &[ModelInfo];
+
+    /// 실시간 모델 카탈로그. 기본은 정적 [`Self::models`] 를 복제해 돌려준다. aiproxy 처럼
+    /// 카탈로그 API 가 있는 어댑터는 이를 오버라이드해 실제 제공 모델을 가져오고, 조회 실패
+    /// 시엔 정적 목록으로 폴백한다. `/models` 표시와 `/model` 검증이 이 결과를 쓴다.
+    async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        Ok(self.models().to_vec())
+    }
 
     /// 요청을 보내고 정규화된 이벤트 스트림을 받는다.
     async fn stream(&self, request: CompletionRequest) -> Result<EventStream>;

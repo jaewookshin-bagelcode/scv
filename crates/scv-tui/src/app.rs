@@ -26,7 +26,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use scv_core::agent::Agent;
 use scv_core::message::{AgentEvent, StopReason, StreamEvent};
-use scv_core::provider::Provider;
+use scv_core::provider::{ModelInfo, Provider};
 use scv_core::session::{Session, SessionStore};
 use scv_core::skill::SkillRegistry;
 use scv_core::tool::{CancellationToken, PermissionLevel};
@@ -112,6 +112,8 @@ pub(crate) enum Command {
     Provider(String),
     /// 현재 프로바이더에서 모델만 전환.
     Model(String),
+    /// 현재 프로바이더에서 사용 가능한 모델 목록.
+    Models,
     /// 사용 가능한 프로바이더 목록.
     Providers,
     /// 사용 가능한 스킬 목록.
@@ -131,6 +133,7 @@ pub(crate) fn parse_command(line: &str) -> Option<Command> {
     Some(match (cmd, arg) {
         ("provider" | "p", a) if !a.is_empty() => Command::Provider(a.to_string()),
         ("model" | "m", a) if !a.is_empty() => Command::Model(a.to_string()),
+        ("models", _) => Command::Models,
         ("providers", _) => Command::Providers,
         ("skills", _) => Command::Skills,
         ("help" | "h" | "?", _) => Command::Help,
@@ -173,6 +176,10 @@ pub struct App {
     hint: String,
     /// 현재 프로바이더·모델 라벨(입력창 제목에 표시). `/provider`·`/model` 로 갱신.
     model_label: String,
+    /// 현재 프로바이더의 실시간 모델 카탈로그 캐시(`/models` 표시·`/model` 검증용). 시작 시와
+    /// `/provider` 전환 후 `Provider::list_models` 로 갱신한다. 조회 실패면 비어 있고, 그 경우
+    /// `/model` 은 검증을 건너뛰고 무엇이든 허용한다.
+    models: Vec<ModelInfo>,
     /// 대화 로그를 하단에서 위로 끌어올린 줄 수(0 = 하단 추적). PageUp/Down 으로 조절.
     scroll_lines: u16,
 }
@@ -202,6 +209,7 @@ impl App {
             quit_armed: false,
             hint: String::new(),
             model_label: String::new(),
+            models: Vec::new(),
             scroll_lines: 0,
         }
     }
@@ -218,6 +226,9 @@ impl App {
         skills: &SkillRegistry,
     ) -> scv_core::Result<()> {
         self.model_label = format!("{}·{}", agent.provider.id(), agent.model);
+        // 실시간 모델 카탈로그를 캐시(aiproxy 는 GET /api/v1/models/anthropic 조회). 실패하면
+        // 빈 목록 → `/model` 검증은 건너뛰고 `/models` 는 "없음" 을 표시(시작을 막지 않음).
+        self.models = agent.provider.list_models().await.unwrap_or_default();
         let guard = RawModeGuard::enter().map_err(|e| map_io("enter raw mode", e))?;
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend).map_err(|e| map_io("init terminal", e))?;
@@ -276,7 +287,17 @@ impl App {
                     }
                     other => {
                         self.transcript.push(format!("› {raw}"));
-                        self.handle_command(other, &mut agent, providers, make_provider, skills);
+                        let switched = self.handle_command(
+                            other,
+                            &mut agent,
+                            providers,
+                            make_provider,
+                            skills,
+                        );
+                        // 프로바이더가 바뀌었으면 새 프로바이더의 카탈로그로 캐시를 갱신한다.
+                        if switched {
+                            self.models = agent.provider.list_models().await.unwrap_or_default();
+                        }
                         self.render(&mut terminal)?;
                         continue;
                     }
@@ -514,6 +535,7 @@ impl App {
 
     /// 슬래시 명령 처리(프로바이더/모델 전환 등). 결과를 transcript 에 한 줄로 남긴다.
     /// 프로바이더 전환은 주입된 `make_provider` 가 실제 빌드를 한다(scv-cli).
+    /// **반환값**: 프로바이더가 바뀌었는가(true 면 호출자가 모델 카탈로그 캐시를 갱신).
     fn handle_command(
         &mut self,
         cmd: Command,
@@ -521,7 +543,7 @@ impl App {
         providers: &[String],
         make_provider: &MakeProvider<'_>,
         skills: &SkillRegistry,
-    ) {
+    ) -> bool {
         match cmd {
             Command::Provider(id) => match make_provider(&id) {
                 Ok((provider, model)) => {
@@ -529,37 +551,86 @@ impl App {
                     agent.model = model.clone();
                     self.model_label = format!("{id}·{model}");
                     self.transcript.push(format!("[switched: {id} · {model}]"));
+                    true // 프로바이더 교체됨 → 카탈로그 갱신 필요.
                 }
-                Err(e) => self
-                    .transcript
-                    .push(format!("[provider switch failed: {e}]")),
+                Err(e) => {
+                    self.transcript
+                        .push(format!("[provider switch failed: {e}]"));
+                    false
+                }
             },
             Command::Model(m) => {
-                agent.model = m.clone();
-                self.model_label = format!("{}·{m}", agent.provider.id());
-                self.transcript.push(format!("[switched model: {m}]"));
+                // 실시간 카탈로그(self.models)에 대해 검증한다. 오타·잘못된 ID 가 조용히 통과해
+                // 나중에 API 404 로 터지는 것을 막는다(`/provider` 실패 처리와 대칭). 카탈로그가
+                // 비면(조회 실패·미지원) 검증할 수 없으므로 그대로 허용한다.
+                let valid = self.models.is_empty() || self.models.iter().any(|mi| mi.id == m);
+                if valid {
+                    agent.model = m.clone();
+                    self.model_label = format!("{}·{m}", agent.provider.id());
+                    self.transcript.push(format!("[switched model: {m}]"));
+                } else {
+                    let ids = self
+                        .models
+                        .iter()
+                        .map(|mi| mi.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let pid = agent.provider.id().to_string();
+                    self.transcript.push(format!(
+                        "[unknown model: {m} — '{pid}' 에서 사용 가능: {ids}]"
+                    ));
+                }
+                false
+            }
+            Command::Models => {
+                let cur = agent.model.as_str();
+                let list: Vec<String> = self
+                    .models
+                    .iter()
+                    .map(|m| {
+                        if m.id == cur {
+                            format!("{} (현재)", m.id)
+                        } else {
+                            m.id.clone()
+                        }
+                    })
+                    .collect();
+                if list.is_empty() {
+                    let pid = agent.provider.id();
+                    self.transcript
+                        .push(format!("[models: '{pid}' 프로바이더에 등록된 모델이 없음]"));
+                } else {
+                    self.transcript
+                        .push(format!("[models: {}]", list.join(", ")));
+                }
+                false
             }
             Command::Providers => {
                 self.transcript
                     .push(format!("[providers: {}]", providers.join(", ")));
+                false
             }
             Command::Skills => {
                 let names: Vec<&str> = skills.summaries().map(|m| m.name.as_str()).collect();
                 self.transcript
                     .push(format!("[skills: {} — run with /<name>]", names.join(", ")));
+                false
             }
             Command::Help => {
                 self.transcript.push(
-                    "[commands] /provider <id> · /model <id> · /providers · /skills · /<skill> · /help"
+                    "[commands] /provider <id> · /model <id> · /providers · /models · /skills · /<skill> · /help"
                         .to_string(),
                 );
                 self.transcript.push(
                     "[keys] PageUp / PageDown 키로 대화 스크롤 · Ctrl-C 중단/종료".to_string(),
                 );
+                false
             }
-            Command::Unknown(c) => self
-                .transcript
-                .push(format!("[unknown: /{c} — try /help or /skills]")),
+            Command::Unknown(c) => {
+                self.transcript
+                    .push(format!("[unknown: /{c} — try /help or /skills]"));
+                false
+            }
         }
     }
 
@@ -991,6 +1062,7 @@ mod tests {
             parse_command("/m qwen3.5:9b"),
             Some(Command::Model("qwen3.5:9b".into()))
         );
+        assert_eq!(parse_command("/models"), Some(Command::Models));
         assert_eq!(parse_command("/providers"), Some(Command::Providers));
         assert_eq!(parse_command("/skills"), Some(Command::Skills));
         assert_eq!(parse_command("/help"), Some(Command::Help));
@@ -1038,6 +1110,14 @@ mod tests {
             _t: &[ToolSchema],
         ) -> scv_core::Result<u64> {
             Ok(0)
+        }
+    }
+    fn model_info(id: &str) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            context_window: 1_000_000,
+            max_output_tokens: 64_000,
+            supports_thinking: true,
         }
     }
     struct AllowGate;
@@ -1110,5 +1190,86 @@ mod tests {
         );
         assert_eq!(agent.provider.id(), "openai"); // 그대로
         assert!(app.transcript.iter().any(|l| l.contains("switch failed")));
+    }
+
+    fn noop_make(_: &str) -> scv_core::Result<(Arc<dyn Provider>, String)> {
+        Err(scv_core::Error::Provider("unused".into()))
+    }
+
+    #[test]
+    fn model_command_validates_against_cached_catalog() {
+        let mut app = App::new(SpinnerStyle::Ascii);
+        let mut agent = stub_agent();
+        agent.model = "claude-sonnet-4-6".into();
+        // App 이 list_models 로 채우는 실시간 카탈로그를 흉내낸다.
+        app.models = vec![
+            model_info("claude-sonnet-4-6"),
+            model_info("claude-opus-4-8"),
+        ];
+        let skills = SkillRegistry::new();
+
+        // 카탈로그에 있는 모델 → 전환 성공.
+        app.handle_command(
+            Command::Model("claude-opus-4-8".into()),
+            &mut agent,
+            &[],
+            &noop_make,
+            &skills,
+        );
+        assert_eq!(agent.model, "claude-opus-4-8");
+        assert!(app.transcript.last().unwrap().contains("switched model"));
+
+        // 목록에 없는 모델(오타) → 거부, 모델 불변.
+        app.handle_command(
+            Command::Model("opus-4.8".into()),
+            &mut agent,
+            &[],
+            &noop_make,
+            &skills,
+        );
+        assert_eq!(agent.model, "claude-opus-4-8"); // 그대로
+        assert!(app.transcript.last().unwrap().contains("unknown model"));
+    }
+
+    #[test]
+    fn model_command_allows_any_when_catalog_empty() {
+        // 카탈로그 조회 실패(빈 캐시) → 검증 불가 → 무엇이든 허용(하위호환).
+        let mut app = App::new(SpinnerStyle::Ascii);
+        let mut agent = stub_agent(); // app.models 는 기본 빈 벡터.
+        let skills = SkillRegistry::new();
+        app.handle_command(
+            Command::Model("anything:latest".into()),
+            &mut agent,
+            &[],
+            &noop_make,
+            &skills,
+        );
+        assert_eq!(agent.model, "anything:latest");
+    }
+
+    #[test]
+    fn models_command_lists_and_marks_current() {
+        let mut app = App::new(SpinnerStyle::Ascii);
+        let mut agent = stub_agent();
+        agent.model = "claude-sonnet-4-6".into();
+        app.models = vec![
+            model_info("claude-sonnet-4-6"),
+            model_info("claude-opus-4-8"),
+        ];
+        let skills = SkillRegistry::new();
+
+        app.handle_command(Command::Models, &mut agent, &[], &noop_make, &skills);
+        let last = app.transcript.last().unwrap();
+        assert!(last.contains("claude-sonnet-4-6 (현재)"));
+        assert!(last.contains("claude-opus-4-8"));
+
+        // 캐시가 비면 안내 메시지.
+        app.models.clear();
+        app.handle_command(Command::Models, &mut agent, &[], &noop_make, &skills);
+        assert!(app
+            .transcript
+            .last()
+            .unwrap()
+            .contains("등록된 모델이 없음"));
     }
 }

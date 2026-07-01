@@ -41,7 +41,7 @@ cargo build --release    # 릴리스(최적화 — 배포/벤치용)
 codeb login --token aiproxy_xxx       # 토큰 발급/로그인(Cloudflare VPN + Okta 필요)
 export CODEB_TOKEN="aiproxy_xxx"       # api_key_env 가 이 변수를 Bearer 로 전송
 export SCV_LOG=info                    # (선택) trace|debug|info|warn|error
-scv "..."                             # 기본 aiproxy. --model claude-sonnet-4-6 | claude-haiku-4-5
+scv "..."                             # 기본 aiproxy(claude-sonnet-4-6). --model 로 교체(TUI 에선 /models 로 실시간 목록)
 ```
 
 **로컬 Ollama**(선택) — 오프라인·무료. 키·네트워크가 필요 없다:
