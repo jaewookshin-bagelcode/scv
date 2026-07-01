@@ -108,6 +108,12 @@ impl Agent {
                 .prepare(session.messages.clone(), last_input_tokens)
                 .await?;
 
+            // 전송 직전 tool_use/tool_result 짝 보정. 중단(interrupt)이나 손상 세션 재개로
+            // 실행되지 않은 tool_use 가 대응 tool_result 없이 남아 있으면, Anthropic 은
+            // "모든 tool_use 뒤에 대응 tool_result" 를 요구하므로 400 이 난다. 매달린 tool_use
+            // 마다 취소 tool_result 를 채워 불변식을 지킨다(역할 교대도 깨지 않음).
+            let messages = reconcile_tool_results(messages);
+
             // 2. 요청 구성 → 스트리밍 호출.
             let request = CompletionRequest {
                 model: self.model.clone(),
@@ -547,6 +553,78 @@ fn promote_final_thinking_to_text(content: &mut Vec<ContentBlock>, stop_reason: 
     content.push(ContentBlock::Text { text });
 }
 
+/// 실행되지 못한 tool_use 에 채워 넣는 취소 tool_result 의 내용.
+const INTERRUPTED_TOOL_RESULT: &str = "The user interrupted this turn before this tool call ran.";
+
+/// 프로바이더로 보내기 **직전** 히스토리의 tool_use/tool_result 짝을 보정한다.
+///
+/// 중단(interrupt)이나 손상된 세션 재개로, 실행되지 않은 client `tool_use` 블록이 대응
+/// `tool_result` 없이 남을 수 있다. Anthropic 은 "모든 tool_use 뒤에 대응 tool_result" 를
+/// 요구하므로(없으면 400), 짝 없는 tool_use 마다 취소 표식 tool_result 를 만들어 **바로 다음
+/// user 메시지 앞에 끼워 넣는다**. 다음 메시지가 user 가 아니면(또는 없으면) 새 user 메시지를
+/// 하나 삽입한다. 이렇게 하면 짝 불변식은 물론 **역할 교대**(연속 user 금지)도 지켜진다 —
+/// 매달린 tool_use 를 그냥 지우면 빈 assistant 가 드롭되며 연속 user 가 되어 또 400 이 난다.
+///
+/// 정상 흐름(도구 실행 직후 tool_result 를 붙인 경우)에서는 채울 것이 없어 무동작이다.
+/// 서버사이드 도구 블록(ServerToolUse 등)은 건드리지 않는다(pause_turn 재전송 경로 소관).
+fn reconcile_tool_results(messages: Vec<Message>) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::with_capacity(messages.len() + 1);
+    let mut i = 0;
+    while i < messages.len() {
+        out.push(messages[i].clone());
+        let ids: Vec<String> = messages[i]
+            .tool_uses()
+            .map(|(id, _, _)| id.to_string())
+            .collect();
+        if !ids.is_empty() {
+            // 다음 메시지가 user 면 이미 응답된 tool_use_id 를 모은다.
+            let next_is_user = messages.get(i + 1).is_some_and(|m| m.role == Role::User);
+            let answered: std::collections::HashSet<&str> = if next_is_user {
+                messages[i + 1]
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+            let missing: Vec<ContentBlock> = ids
+                .iter()
+                .filter(|id| !answered.contains(id.as_str()))
+                .map(|id| ContentBlock::ToolResult {
+                    tool_use_id: id.clone(),
+                    content: INTERRUPTED_TOOL_RESULT.to_string(),
+                    is_error: true,
+                })
+                .collect();
+            if !missing.is_empty() {
+                if next_is_user {
+                    // 다음 user 메시지 앞에 누락분을 끼워 넣는다(그 user 를 여기서 소비).
+                    let next = &messages[i + 1];
+                    let mut content = missing;
+                    content.extend(next.content.iter().cloned());
+                    out.push(Message {
+                        role: Role::User,
+                        content,
+                    });
+                    i += 2;
+                    continue;
+                }
+                // 다음이 user 가 아니거나 없음 → 새 user 메시지로 채운다.
+                out.push(Message {
+                    role: Role::User,
+                    content: missing,
+                });
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,6 +790,116 @@ mod tests {
         assert!(
             matches!(&blocks[2], ContentBlock::ServerToolResult { result_type, .. } if result_type == "web_search_tool_result")
         );
+    }
+
+    fn tool_use_block(id: &str) -> ContentBlock {
+        ContentBlock::ToolUse {
+            id: id.into(),
+            name: "write".into(),
+            input: json!({}),
+        }
+    }
+    fn tool_result_block(id: &str) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: id.into(),
+            content: "ok".into(),
+            is_error: false,
+        }
+    }
+
+    #[test]
+    fn reconcile_is_noop_when_tool_use_already_answered() {
+        // 정상 흐름: tool_use 뒤에 대응 tool_result 가 이미 있으면 건드리지 않는다.
+        let msgs = vec![
+            Message::assistant(vec![tool_use_block("c1")]),
+            Message {
+                role: Role::User,
+                content: vec![tool_result_block("c1")],
+            },
+        ];
+        let out = reconcile_tool_results(msgs);
+        assert_eq!(out.len(), 2);
+        assert!(matches!(
+            &out[1].content[0],
+            ContentBlock::ToolResult { tool_use_id, content, .. }
+                if tool_use_id == "c1" && content == "ok"
+        ));
+    }
+
+    #[test]
+    fn reconcile_inserts_cancelled_result_before_following_user_prompt() {
+        // 중단 재현: 매달린 tool_use(text 동반) 다음에 새 user 프롬프트가 온다.
+        // 취소 tool_result 를 그 user 메시지 **앞**에 끼워 넣어, 짝을 맞추면서도
+        // 연속 user 를 만들지 않는다(assistant → user 로 교대 유지).
+        let msgs = vec![
+            Message::assistant(vec![
+                ContentBlock::text("계획 파일을 작성할게요"),
+                tool_use_block("toolu_01"),
+            ]),
+            Message::user("마크다운으로 만들어줘"),
+        ];
+        let out = reconcile_tool_results(msgs);
+        assert_eq!(out.len(), 2, "assistant + (tool_result+prompt 합쳐진) user");
+        assert_eq!(out[0].role, Role::Assistant);
+        assert_eq!(out[1].role, Role::User);
+        // user 메시지: [취소 tool_result, 원래 프롬프트 텍스트] 순서.
+        match &out[1].content[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                content,
+            } => {
+                assert_eq!(tool_use_id, "toolu_01");
+                assert!(is_error);
+                assert_eq!(content, INTERRUPTED_TOOL_RESULT);
+            }
+            other => panic!("expected cancelled tool_result first, got {other:?}"),
+        }
+        assert!(matches!(
+            &out[1].content[1],
+            ContentBlock::Text { text } if text == "마크다운으로 만들어줘"
+        ));
+    }
+
+    #[test]
+    fn reconcile_appends_user_when_dangling_tool_use_is_last() {
+        // 다음 메시지가 없으면(매달린 tool_use 가 히스토리 끝) 새 user 메시지로 짝을 채운다.
+        let msgs = vec![Message::assistant(vec![tool_use_block("c1")])];
+        let out = reconcile_tool_results(msgs);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].role, Role::User);
+        assert!(matches!(
+            &out[1].content[0],
+            ContentBlock::ToolResult { tool_use_id, is_error: true, .. } if tool_use_id == "c1"
+        ));
+    }
+
+    #[test]
+    fn reconcile_fills_only_unanswered_ids() {
+        // 두 tool_use 중 하나만 응답됨 → 누락된 하나만 채운다(응답된 것은 보존).
+        let msgs = vec![
+            Message::assistant(vec![tool_use_block("c1"), tool_use_block("c2")]),
+            Message {
+                role: Role::User,
+                content: vec![tool_result_block("c1")],
+            },
+        ];
+        let out = reconcile_tool_results(msgs);
+        assert_eq!(out.len(), 2);
+        let ids: Vec<(&str, bool)> = out[1]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    ..
+                } => Some((tool_use_id.as_str(), *is_error)),
+                _ => None,
+            })
+            .collect();
+        // 누락된 c2(취소, is_error) 가 먼저, 기존 c1 이 뒤에 온다.
+        assert_eq!(ids, [("c2", true), ("c1", false)]);
     }
 }
 

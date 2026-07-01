@@ -53,6 +53,14 @@ flowchart TD
 세션에 보존**한 뒤 `Error::Cancelled` 로 턴을 끝낸다(크래시가 아니라 정상적인 중단).
 TUI 측 키 처리·진행 표시는 §4.5.
 
+보존된 부분 응답에는 **실행되지 못한 `tool_use` 블록**이 섞일 수 있다(도구 호출 직전에
+끊긴 경우). Anthropic 은 "모든 `tool_use` 뒤에 대응 `tool_result`" 를 요구하므로, 이런
+매달린 `tool_use` 를 그대로 다시 보내면 다음 요청이 400 으로 거부된다. 그래서 루프는
+**프로바이더 전송 직전**(`reconcile_tool_results`) 짝 없는 `tool_use` 마다 취소 표식
+`tool_result` 를 만들어 바로 다음 user 메시지 앞에 끼워 넣는다 — 짝 불변식과 역할 교대를
+함께 지킨다(중단뿐 아니라 손상된 세션 재개에서도 동일하게 보정). 세션 JSONL 자체는 원본을
+그대로 남기고, 보정은 전송 경계에서만 한다.
+
 이 루프의 핵심 설계 원칙은 **"엔진은 구체 타입을 모른다"** 이다. `Agent` 는
 `dyn Provider`, `dyn Tool`, `dyn PermissionGate`, `dyn ContextManager` 같은 trait
 object 만 들고 있다. 따라서 어떤 프로바이더/도구 조합과도 같은 루프가 동작한다.
