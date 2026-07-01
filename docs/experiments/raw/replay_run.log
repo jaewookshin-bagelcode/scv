@@ -1,0 +1,23 @@
+== replay @ 2026-07-01T01:44:38Z ==
+URL: ${AIPROXY_BASE}/v1/messages
+
+── 과제2 캐싱: cache_body.json 2회 연속 전송 ──
+1회차 HTTP 200
+  usage: {"input_tokens": 17, "cache_creation_input_tokens": 3403, "cache_read_input_tokens": 0, "cache_creation": {"ephemeral_5m_input_tokens": 3403, "ephemeral_1h_input_tokens": 0}, "output_tokens": 24, "service_tier": "standard", "inference_geo": "global"}
+  stop: end_turn | type: message | error: -
+2회차 HTTP 200
+  usage: {"input_tokens": 17, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 3403, "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}, "output_tokens": 24, "service_tier": "standard", "inference_geo": "global"}
+  stop: end_turn | type: message | error: -
+  기대: 1회차 cache_creation>0/cache_read=0, 2회차 cache_read>0(같은 값)
+
+── 과제5 context editing: beta ON vs OFF ──
+beta ON  HTTP 400 (기대 200, applied_edits:[])
+  usage: {}
+  stop: None | type: error | error: {"type": "invalid_request_error", "message": "context_management.edits.0: Input tag 'clear_tool_uses_20250606' found using 'type' does not match any of the expected tags: 'clear_thinking_20251015', 'clear_tool_uses_20250919'"}
+beta OFF HTTP 400 (기대 400, 'context_management: Extra inputs are not permitted')
+  usage: {}
+  stop: None | type: error | error: {"type": "invalid_request_error", "message": "context_management: Extra inputs are not permitted"}
+
+※ beta ON 이 400 이면 edits.type 스키마 버전 차이일 수 있음(그 경우도 파일은 남음).
+※ beta OFF 의 400 은 top-level context_management 필드 자체가 거부되는 것이라 스키마와 무관하게 재현됨 — 이게 보고서 과제5의 그 400.
+== done. 로그: /Users/shin/Developer/scv/report/report2/raw/replay_run.log ==

@@ -1,0 +1,8 @@
+== TTL test @ 2026-07-01T01:46:29Z ==
+t0  write HTTP 200
+  write=3418 read=0 ephem5m=3418
+… 330초 대기(중간 접근 없음, TTL 300초 초과) …
+t+330  재전송 HTTP 200
+  write=3418 read=0 ephem5m=3418
+판정: t+330 에서 read=0/write>0 이면 TTL 만료로 캐시 깨짐 확정. read>0 이면 5분보다 오래 산다는 뜻.
+== TTL test done ==

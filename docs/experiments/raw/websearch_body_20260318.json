@@ -1,0 +1,3 @@
+{"model":"claude-sonnet-4-6","max_tokens":400,
+ "tools":[{"type":"web_search_20260318","name":"web_search","max_uses":2}],
+ "messages":[{"role":"user","content":"What is the latest stable Rust compiler version? Use web search and cite your source."}]}

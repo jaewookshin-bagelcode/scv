@@ -1,0 +1,5 @@
+$ SCV_CONFIG=/nonexistent.toml scv "Answer with exactly one word: scv"
+2026-07-01T06:46:35.050208Z  INFO scv: 프로젝트 디렉터리 생성 path=<workdir>/.scv
+scv
+— stop: EndTurn, in: 331, out: 5, cache_read: 0, cache_write: 1254
+[session 1931d65d-544c-4196-8889-c4bbc6a7f4ff]

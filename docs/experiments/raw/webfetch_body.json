@@ -1,0 +1,3 @@
+{"model":"claude-sonnet-4-6","max_tokens":300,
+ "tools":[{"type":"web_fetch_20250910","name":"web_fetch","max_uses":1}],
+ "messages":[{"role":"user","content":"Fetch https://www.rust-lang.org/ and tell me in one sentence what the page says Rust is."}]}

@@ -1,0 +1,1 @@
+{"model":"claude-sonnet-4-6","max_tokens":16,"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]},"messages":[{"role":"user","content":"ping"}]}
