@@ -55,7 +55,7 @@ spinner = "auto"          # auto(유니코드 감지) | unicode | ascii(|/-\ 폴
 [[providers]]
 id = "aiproxy"
 kind = "anthropic"
-model = "claude-sonnet-4-6"        # 또는 claude-haiku-4-5
+model = "claude-sonnet-5"          # 다른 모델은 TUI 에서 /models 로 확인(예: claude-opus-4-8, claude-haiku-4-5)
 api_key_env = "CODEB_TOKEN"
 base_url = "https://aiproxy-api.backoffice.bagelgames.com/anthropic"
 anthropic_version = "2023-06-01"

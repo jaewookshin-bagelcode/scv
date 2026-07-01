@@ -222,7 +222,7 @@ pub const BUILTIN_PROVIDER_IDS: &[&str] = &["ollama", "aiproxy"];
 /// 잘 알려진 내장 프로바이더 정의. 비밀은 담지 않고 `api_key_env`(읽어올 환경변수 이름)만 둔다.
 /// - `ollama`: 로컬 무인증(데몬만 띄우면 동작).
 /// - `aiproxy`: 사내 게이트웨이 경유 Anthropic — `CODEB_TOKEN` 만 있으면 동작(Bearer 인증,
-///   base_url 끝 `/anthropic`, 기본 모델 Sonnet 4.6).
+///   base_url 끝 `/anthropic`, 기본 모델 Sonnet 5).
 fn builtin_provider(id: &str) -> Option<ProviderConfig> {
     match id {
         "ollama" => Some(ProviderConfig {
@@ -238,7 +238,7 @@ fn builtin_provider(id: &str) -> Option<ProviderConfig> {
         "aiproxy" => Some(ProviderConfig {
             id: "aiproxy".into(),
             kind: "anthropic".into(),
-            model: "claude-sonnet-4-6".into(),
+            model: "claude-sonnet-5".into(),
             api_key_env: Some("CODEB_TOKEN".into()),
             base_url: Some("https://aiproxy-api.backoffice.bagelgames.com/anthropic".into()),
             anthropic_version: Some("2023-06-01".into()),
@@ -368,7 +368,7 @@ spinner = "ascii"
         assert_eq!(p.auth_style.as_deref(), Some("bearer"));
         assert_eq!(p.api_key_env.as_deref(), Some("CODEB_TOKEN"));
         assert!(p.base_url.as_deref().unwrap().ends_with("/anthropic"));
-        assert_eq!(p.model, "claude-sonnet-4-6");
+        assert_eq!(p.model, "claude-sonnet-5");
         // ollama 도 내장(무인증).
         assert!(cfg
             .resolve_provider("ollama")

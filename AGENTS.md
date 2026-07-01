@@ -8,7 +8,7 @@
 `scv` = 터미널에서 도는 **멀티 프로바이더 코딩 에이전트**(Claude Code / Codex 류).
 Rust + Tokio. 시스템 프롬프트 · 세션 · 도구 · 스킬을 1급 기능으로 제공한다.
 
-- **기본 LLM 프로바이더: aiproxy 경유 Anthropic(모델 `claude-sonnet-4-6`)**.
+- **기본 LLM 프로바이더: aiproxy 경유 Anthropic(모델 `claude-sonnet-5`)**.
   로컬 Ollama(`qwen3.5:9b`)는 `--provider ollama` 로 쓰는 무료·오프라인 대체.
 - 인터페이스: 인터랙티브 CLI/TUI(+ 원샷 모드).
 
@@ -90,7 +90,7 @@ cargo run --bin scv                                        # 인터랙티브 TUI
 - **의존성**: 루트 `[workspace.dependencies]` 에서 단일 버전 관리, crate 는
   `dep.workspace = true` 로만 참조. `Cargo.lock` 은 커밋한다(애플리케이션).
 - **LLM 연동**(전문 `docs/CODING_RULES.md` §9):
-  - 스트리밍이 기본. 모델 id 는 설정에서 주입(하드코딩 금지), 기본 `claude-sonnet-4-6`(aiproxy Anthropic).
+  - 스트리밍이 기본. 모델 id 는 설정에서 주입(하드코딩 금지), 기본 `claude-sonnet-5`(aiproxy Anthropic).
   - `tool_use.input` 은 JSON 파싱으로만(문자열 매칭 금지).
   - 병렬 도구 결과는 **하나의 user 메시지**에 모은다.
   - 종료 사유(stop/finish reason)를 먼저 확인 후 본문을 읽는다.

@@ -3,7 +3,7 @@
 터미널에서 동작하는 멀티 프로바이더 코딩 에이전트(Claude Code / Codex 류). Rust + Tokio.
 LLM 은 **모델(토큰)** 로만 쓰고 루프·도구·승인·세션은 scv 가 소유한다 — raw API 에 가장 가까운 투명한 동작.
 
-- 🔌 **프로바이더** — 기본 aiproxy 경유 Anthropic(`claude-sonnet-4-6`, `CODEB_TOKEN` 만 있으면 동작) · 로컬 Ollama(`qwen3.5:9b`, 키·네트워크 불필요)는 `--provider ollama`
+- 🔌 **프로바이더** — 기본 aiproxy 경유 Anthropic(`claude-sonnet-5`, `CODEB_TOKEN` 만 있으면 동작) · 로컬 Ollama(`qwen3.5:9b`, 키·네트워크 불필요)는 `--provider ollama`
 - 🛠 **내장 도구 8종** — `read`/`glob`/`grep`/`write`/`edit`/`bash`/`web_fetch`/`transcript_search`
 - 🔒 **권한 게이트(fail-closed)** — 부작용 도구는 실행 전 승인(human-in-the-loop)
 - 🧩 **스킬** — `SKILL.md` 파일을 `/<name>` 으로 발동(progressive disclosure)

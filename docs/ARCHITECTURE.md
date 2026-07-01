@@ -21,7 +21,7 @@
 추가 설계 결정:
 - **언어/런타임**: Rust + Tokio(async)
 - **LLM 연동**: 멀티 프로바이더 추상이되 **둘로 좁힘**(온보딩 과제 1) — **기본은 aiproxy 경유
-  Anthropic(`claude-sonnet-4-6`)**, 로컬 Ollama(`qwen3.5:9b`)는 선택(`--provider ollama`).
+  Anthropic(`claude-sonnet-5`)**, 로컬 Ollama(`qwen3.5:9b`)는 선택(`--provider ollama`).
   설정 파일이 없어도 `CODEB_TOKEN` 만 있으면 동작(`default_provider` serde 기본값 = `aiproxy`).
 - **인터페이스**: 인터랙티브 CLI/TUI(원샷 모드도 지원)
 
@@ -141,7 +141,7 @@ flowchart BT
     A -- implements --> core
 ```
 
-> **기본 프로바이더는 aiproxy 경유 Anthropic(모델 `claude-sonnet-4-6`)** 다 — `kind="anthropic"`,
+> **기본 프로바이더는 aiproxy 경유 Anthropic(모델 `claude-sonnet-5`)** 다 — `kind="anthropic"`,
 > `base_url` 끝 `/anthropic`, `auth_style="bearer"`. 설정 파일이 없어도 `CODEB_TOKEN` 만 있으면
 > 동작한다(내장 폴백). 로컬 **Ollama(`qwen3.5:9b`)는 선택**(`--provider ollama`) — OpenAI-호환
 > 어댑터를 재사용하며(`kind="ollama"`, `base_url` 자동 `localhost:11434/v1`, 추론 파라미터 미전송)
