@@ -68,11 +68,11 @@ impl Phase {
     pub(crate) fn label(&self) -> String {
         match self {
             Phase::Idle => "ready".into(),
-            Phase::Waiting => "waiting for model…".into(),
-            Phase::Thinking => "thinking…".into(),
-            Phase::Responding => "responding…".into(),
-            Phase::ToolPending => "preparing tools…".into(),
-            Phase::RunningTool(name) => format!("running {name}…"),
+            Phase::Waiting => "waiting for model...".into(),
+            Phase::Thinking => "thinking...".into(),
+            Phase::Responding => "responding...".into(),
+            Phase::ToolPending => "preparing tools...".into(),
+            Phase::RunningTool(name) => format!("running {name}..."),
             Phase::AwaitingPermission(name) => format!("awaiting approval for {name}"),
             Phase::Interrupted => "interrupted".into(),
         }

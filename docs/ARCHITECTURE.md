@@ -426,14 +426,26 @@ Idle → Waiting → Thinking(ThinkingDelta) → Responding(TextDelta)
 
 **스피너 / ANSI 아트.** 출력이 아직 안 보이는 phase(Waiting/Thinking/RunningTool)에서
 스피너를 돌린다 — Braille `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`(유니코드), 미지원 터미널은 `|/-\`(ascii
-폴백, `[ui].spinner` 설정). 상태줄 예: `⠹ Running bash…  (4s · ctrl-c to interrupt)`.
+폴백, `[ui].spinner` 설정). 상태줄 예: `⠹ running bash...  (ctrl-c to interrupt)`.
 
 **도구 출력 표시.** 도구 결과(`ToolOutput.content`)는 모델 컨텍스트의 `tool_result` 로
 들어가는 동시에 `AgentEvent::ToolEnd { content, ... }` 로 TUI 에 전달된다. TUI 는 이를
 transcript 에 `[<tool> output]` 아래 줄 단위로 표시한다. 화면 폭주를 막기 위해 표시용 텍스트만
 길이 제한을 두며, 모델에게 전달되는 `tool_result` 원문은 바꾸지 않는다.
 색 출력은 `NO_COLOR` 를 존중한다. `Responding` 중엔 스피너 대신 스트리밍 텍스트를
-그대로 흘리고 끝에 캐럿(`▋`)만 둔다(스트림과 경쟁 금지).
+그대로 흘리고 끝에 캐럿(`|`)만 둔다(스트림과 경쟁 금지).
+
+**턴 구분 · 입력 표시자.** 턴마다 transcript 에 가로 구분선을 넣어 경계를 보인다(첫 입력
+앞엔 생략). 입력창은 상태를 반영한다 — **idle**(입력 가능)이면 테두리를 강조하고 입력 끝에
+실제 커서(`set_cursor_position`)를 띄우며 제목이 `message ...`, 턴 진행 중이면 테두리를
+흐리게·제목을 `running - ctrl-c to interrupt` 로 바꾸고 커서를 숨긴다(입력 불가 명시).
+판정은 `phase != Idle`(응답 스트리밍 중 `Responding` 도 입력 불가이므로 `is_active` 가 아님).
+
+**글자 폭 안전(모호폭 회피).** ratatui 는 East-Asian *ambiguous-width* 글자를 폭 1 로 세는데
+CJK 로 설정된 터미널은 폭 2 로 그려, 그 어긋난 셀이 프레임 diff 로 지워지지 않고 잔상으로
+남는다. 그래서 UI chrome(구분자·대시·말줄임·커서·턴 구분선)은 폭이 확정적인 ASCII(`| - ...`)
+만 쓴다 — `·—…▋─`(EAW=A) 금지. 모델 출력 안의 모호폭 글자는 터미널의 ambiguous-width
+설정에 달렸다(코드로 못 잡음).
 
 **Ctrl-C(인터럽트).** raw mode 에선 Ctrl-C 가 SIGINT 가 아니라 키 이벤트로 오므로 UI
 루프가 직접 처리한다 — 턴 진행 중이면 그 턴의 `CancellationToken` 을 cancel(현재 턴만

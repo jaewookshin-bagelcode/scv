@@ -19,7 +19,7 @@ use crossterm::terminal::{
 };
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -157,6 +157,11 @@ enum Prompt {
     Quit,
 }
 
+/// 트랜스크립트에 턴 경계로 삽입되는 sentinel. `draw` 시 대화 폭만큼의 가로줄로 확장된다.
+/// (UI 전용 트랜스크립트에만 들어가고 세션 JSONL 엔 저장되지 않는다.) 제어문자 prefix 로
+/// 실제 모델/사용자 텍스트와 충돌하지 않게 한다.
+const TURN_DIVIDER: &str = "\u{1}scv-turn-divider";
+
 /// 대화형 앱 상태. 렌더는 이 상태만 읽는다(`&self`).
 pub struct App {
     spinner: SpinnerStyle,
@@ -182,6 +187,8 @@ pub struct App {
     models: Vec<ModelInfo>,
     /// 대화 로그를 하단에서 위로 끌어올린 줄 수(0 = 하단 추적). PageUp/Down 으로 조절.
     scroll_lines: u16,
+    /// 첫 사용자 입력 앞에는 턴 구분선을 넣지 않기 위한 플래그(첫 제출 후 false).
+    first_prompt: bool,
 }
 
 impl std::fmt::Debug for App {
@@ -211,6 +218,7 @@ impl App {
             model_label: String::new(),
             models: Vec::new(),
             scroll_lines: 0,
+            first_prompt: true,
         }
     }
 
@@ -229,7 +237,7 @@ impl App {
         // 라벨은 **설정 프로바이더 id**(예: aiproxy)를 쓴다. `agent.provider.id()` 는 어댑터
         // 와이어 종류(anthropic)라 aiproxy 처럼 한 어댑터가 여러 설정 id 를 서빙하면 어긋난다
         // (`/provider` 전환 라벨과 동일한 기준). 모델은 실행 중 `/model` 로 바뀔 수 있다.
-        self.model_label = format!("{provider_id}·{}", agent.model);
+        self.model_label = format!("{provider_id}|{}", agent.model);
         // 실시간 모델 카탈로그를 캐시(aiproxy 는 GET /api/v1/models/anthropic 조회). 실패하면
         // 빈 목록 → `/model` 검증은 건너뛰고 `/models` 는 "없음" 을 표시(시작을 막지 않음).
         self.models = agent.provider.list_models().await.unwrap_or_default();
@@ -257,10 +265,10 @@ impl App {
             format!("skills: {} (run with /<name>)", skill_names.join(", "))
         };
         self.transcript.push(format!(
-            "scv · {} · {skills_note} · /help",
+            "scv | {} | {skills_note} | /help",
             self.model_label
         ));
-        self.hint = "type a message · enter to send · ctrl-c to quit".into();
+        self.hint = "type a message | enter to send | ctrl-c to quit".into();
         self.render(&mut terminal)?;
 
         loop {
@@ -276,6 +284,11 @@ impl App {
             if raw.trim().is_empty() {
                 continue;
             }
+            // 턴 경계를 시각적으로 분리한다(첫 입력 앞엔 생략). draw 에서 폭만큼 가로줄로 확장.
+            if !self.first_prompt {
+                self.transcript.push(TURN_DIVIDER.to_string());
+            }
+            self.first_prompt = false;
             // 입력 분류 → 이번 턴에 모델로 보낼 prompt 결정.
             //  - 슬래시 명령(/provider, /model, /providers, /skills, /help): 즉시 처리 후 continue.
             //  - `/<스킬이름>`: 그 스킬 본문을 지시로 주입해 이번 턴 실행(progressive disclosure 발동).
@@ -364,16 +377,16 @@ impl App {
             match outcome {
                 Ok(()) => {}
                 Err(scv_core::Error::Cancelled) => {
-                    self.transcript.push("[interrupted — partial saved]".into());
+                    self.transcript.push("[interrupted - partial saved]".into());
                 }
                 Err(scv_core::Error::PermissionDenied(tool)) => {
                     self.transcript
-                        .push(format!("[denied: {tool} — turn aborted]"));
+                        .push(format!("[denied: {tool} - turn aborted]"));
                 }
                 Err(e) => self.transcript.push(format!("[error: {e}]")),
             }
             self.phase = Phase::Idle;
-            self.hint = "type a message · enter to send · ctrl-c to quit".into();
+            self.hint = "type a message | enter to send | ctrl-c to quit".into();
 
             // 세션 저장(턴마다 영속화 → 재개 가능).
             if let Err(e) = store.save(&session).await {
@@ -484,7 +497,7 @@ impl App {
             Key::ScrollDown => self.scroll_lines = self.scroll_lines.saturating_sub(SCROLL_STEP),
             Key::Interrupt => {
                 token.cancel();
-                self.hint = "interrupting…".into();
+                self.hint = "interrupting...".into();
             }
             _ => {}
         }
@@ -553,8 +566,8 @@ impl App {
                 Ok((provider, model)) => {
                     agent.provider = provider;
                     agent.model = model.clone();
-                    self.model_label = format!("{id}·{model}");
-                    self.transcript.push(format!("[switched: {id} · {model}]"));
+                    self.model_label = format!("{id}|{model}");
+                    self.transcript.push(format!("[switched: {id} | {model}]"));
                     true // 프로바이더 교체됨 → 카탈로그 갱신 필요.
                 }
                 Err(e) => {
@@ -570,7 +583,7 @@ impl App {
                 let valid = self.models.is_empty() || self.models.iter().any(|mi| mi.id == m);
                 if valid {
                     agent.model = m.clone();
-                    self.model_label = format!("{}·{m}", agent.provider.id());
+                    self.model_label = format!("{}|{m}", agent.provider.id());
                     self.transcript.push(format!("[switched model: {m}]"));
                 } else {
                     let ids = self
@@ -581,7 +594,7 @@ impl App {
                         .join(", ");
                     let pid = agent.provider.id().to_string();
                     self.transcript.push(format!(
-                        "[unknown model: {m} — '{pid}' 에서 사용 가능: {ids}]"
+                        "[unknown model: {m} - '{pid}' 에서 사용 가능: {ids}]"
                     ));
                 }
                 false
@@ -617,22 +630,22 @@ impl App {
             Command::Skills => {
                 let names: Vec<&str> = skills.summaries().map(|m| m.name.as_str()).collect();
                 self.transcript
-                    .push(format!("[skills: {} — run with /<name>]", names.join(", ")));
+                    .push(format!("[skills: {} - run with /<name>]", names.join(", ")));
                 false
             }
             Command::Help => {
                 self.transcript.push(
-                    "[commands] /provider <id> · /model <id> · /providers · /models · /skills · /<skill> · /help"
+                    "[commands] /provider <id> | /model <id> | /providers | /models | /skills | /<skill> | /help"
                         .to_string(),
                 );
                 self.transcript.push(
-                    "[keys] PageUp / PageDown 키로 대화 스크롤 · Ctrl-C 중단/종료".to_string(),
+                    "[keys] PageUp / PageDown 키로 대화 스크롤 | Ctrl-C 중단/종료".to_string(),
                 );
                 false
             }
             Command::Unknown(c) => {
                 self.transcript
-                    .push(format!("[unknown: /{c} — try /help or /skills]"));
+                    .push(format!("[unknown: /{c} - try /help or /skills]"));
                 false
             }
         }
@@ -698,12 +711,19 @@ impl App {
         let mut lines: Vec<Line<'_>> = self
             .transcript
             .iter()
-            .map(|l| Line::raw(l.clone()))
+            .map(|l| {
+                if l == TURN_DIVIDER {
+                    // 턴 구분선: 대화 폭만큼 ASCII 가로줄(흐리게). ASCII 라 폭 모호성 없음.
+                    Line::from(self.styled("-".repeat(inner.width as usize), Color::DarkGray, true))
+                } else {
+                    Line::raw(l.clone())
+                }
+            })
             .collect();
         // 실시간 스트리밍: 답 텍스트가 시작됐으면 그걸(끝에 캐럿), 아직 사고만 흐르면 사고를
         // 흐리게 보여준다 — 사고를 안 보여주면 긴 reasoning 동안 화면이 빈 것처럼 보인다.
         if !self.live.is_empty() {
-            lines.push(Line::from(format!("{}▋", self.live)));
+            lines.push(Line::from(format!("{}|", self.live)));
         } else if !self.live_thinking.is_empty() {
             for tl in self.live_thinking.lines() {
                 lines.push(Line::from(self.styled(
@@ -738,14 +758,45 @@ impl App {
     }
 
     fn draw_input(&self, f: &mut Frame<'_>, area: Rect) {
-        let title = if self.model_label.is_empty() {
+        // 턴 진행 중이면 입력 불가 → 테두리를 흐리게, 제목을 상태 안내로 바꾸고 커서를 숨긴다.
+        // idle(입력 가능)이면 테두리를 강조하고 입력 끝에 실제 커서를 띄워 "지금 입력 가능"을
+        // 명시한다(사용자 요청: 입력 가능 시점 표시자). `is_active`(스피너 단계)는 Responding 을
+        // 빼므로, 응답 스트리밍 중에도 입력은 막혀야 해 Idle 여부로 판정한다.
+        let busy = !matches!(self.phase, Phase::Idle);
+        let title = if busy {
+            " running - ctrl-c to interrupt ".to_string()
+        } else if self.model_label.is_empty() {
             " message ".to_string()
         } else {
-            format!(" message — {} (/help) ", self.model_label)
+            format!(" message - {} (/help) ", self.model_label)
         };
-        let para = Paragraph::new(format!("› {}", self.input))
-            .block(Block::default().borders(Borders::ALL).title(title));
-        f.render_widget(para, area);
+        let border = if busy { Color::DarkGray } else { Color::Cyan };
+        let border_style = if self.color {
+            Style::default().fg(border)
+        } else {
+            Style::default()
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title);
+        let inner = block.inner(area);
+        let body = if busy {
+            Line::from(self.styled(
+                "(모델 응답 중 - 입력 불가)".to_string(),
+                Color::DarkGray,
+                true,
+            ))
+        } else {
+            Line::from(format!("› {}", self.input))
+        };
+        f.render_widget(Paragraph::new(body).block(block), area);
+        if !busy {
+            // 프롬프트 "› "(2칸) 뒤, 입력 끝에 하드웨어 커서를 놓는다. 폭은 char 수로 근사.
+            let x = inner.x + 2 + self.input.chars().count() as u16;
+            let max_x = inner.x + inner.width.saturating_sub(1);
+            f.set_cursor_position(Position::new(x.min(max_x), inner.y));
+        }
     }
 
     fn draw_modal(&self, f: &mut Frame<'_>) {
@@ -809,8 +860,8 @@ fn truncate_oneline(s: &str, max: usize) -> String {
     if oneline.chars().count() <= max {
         return oneline;
     }
-    let cut: String = oneline.chars().take(max.saturating_sub(1)).collect();
-    format!("{cut}…")
+    let cut: String = oneline.chars().take(max.saturating_sub(3)).collect();
+    format!("{cut}...")
 }
 
 /// 화면 중앙에 `height` 줄짜리 폭 `percent_x%` 사각형을 만든다.
@@ -1033,7 +1084,65 @@ mod tests {
         let long = "x".repeat(200);
         let out = truncate_oneline(&long, 10);
         assert_eq!(out.chars().count(), 10);
-        assert!(out.ends_with('…'));
+        assert!(out.ends_with("..."));
+    }
+
+    #[test]
+    fn turn_divider_expands_to_full_width_rule() {
+        use ratatui::backend::TestBackend;
+        let mut app = App::new(SpinnerStyle::Ascii);
+        app.transcript = vec!["hello".into(), TURN_DIVIDER.into(), "world".into()];
+        let mut term = Terminal::new(TestBackend::new(24, 8)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let buf = term.backend().buffer();
+        let all: String = buf.content.iter().map(|c| c.symbol()).collect();
+        // sentinel(제어문자·마커 문자열)이 화면에 새어나오면 안 된다.
+        assert!(!all.contains("turn-divider"), "sentinel leaked");
+        assert!(!all.contains('\u{1}'));
+        // 어느 한 행이 대시 가로줄(≥10)로 확장돼야 한다.
+        let w = buf.area.width as usize;
+        let has_rule = (0..buf.area.height as usize).any(|y| {
+            (0..w)
+                .filter(|&x| buf.content[y * w + x].symbol() == "-")
+                .count()
+                >= 10
+        });
+        assert!(has_rule, "구분선이 가로줄로 확장되지 않음:\n{all}");
+    }
+
+    #[test]
+    fn input_box_signals_ready_vs_busy() {
+        use ratatui::backend::TestBackend;
+        fn screen(app: &App) -> String {
+            let mut term = Terminal::new(TestBackend::new(52, 8)).unwrap();
+            term.draw(|f| app.draw(f)).unwrap();
+            term.backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        }
+        let mut app = App::new(SpinnerStyle::Ascii);
+        app.model_label = "aiproxy|claude-sonnet-5".into();
+        // idle → 입력 가능: 'message' 제목 + 입력 프롬프트('›') 표시.
+        let ready = screen(&app);
+        assert!(
+            ready.contains("message"),
+            "idle 제목에 message 없음: {ready}"
+        );
+        assert!(
+            ready.contains('›'),
+            "idle 엔 입력 프롬프트가 보여야: {ready}"
+        );
+        // 턴 진행 중(Responding) → 'running' 안내로 바뀌고 입력 프롬프트는 사라진다.
+        app.phase = Phase::Responding;
+        let busy = screen(&app);
+        assert!(busy.contains("running"), "busy 제목에 running 없음: {busy}");
+        assert!(
+            !busy.contains('›'),
+            "busy 엔 입력 프롬프트가 없어야: {busy}"
+        );
     }
 
     #[test]
@@ -1171,7 +1280,7 @@ mod tests {
         );
         assert_eq!(agent.provider.id(), "openai");
         assert_eq!(agent.model, "gpt-5.5");
-        assert_eq!(app.model_label, "openai·gpt-5.5");
+        assert_eq!(app.model_label, "openai|gpt-5.5");
 
         // /model 교체(프로바이더 유지).
         app.handle_command(
